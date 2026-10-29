@@ -24,6 +24,11 @@ Vision 기반 Human-to-Robot 원격조작을 위한 학습형 오차 보정 Reta
 
 **Feasible-MAP Retargeting** (임시 명칭): 단일 시점 vision의 관측별 불확실성을 손목 SE(3)와 swivel angle 공간으로 전파하고, 로봇 실행 가능 집합 위에서 제약 MAP 추정으로 관절각을 구한다. 자세한 내용은 Stage 1 문서 Part C–D 참고.
 
+## 협업
+
+- 규칙: [CONTRIBUTING.md](CONTRIBUTING.md)
+- 결정 기록: [docs/decisions.md](docs/decisions.md)
+
 ## 원칙
 
 - 공식 URDF / SDK / 기구학 파라미터 없이 임의 값을 사용하지 않는다.

@@ -6,6 +6,9 @@ venv/
 .vscode/
 .idea/
 
+# Secrets
+.env
+
 # Large / raw data and experiment outputs
 data/raw/
 data/recordings/
