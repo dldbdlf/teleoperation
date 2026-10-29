@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+.vscode/
+.idea/
+
+# Large / raw data and experiment outputs
+data/raw/
+data/recordings/
+*.bag
+*.mcap
+*.db3
+outputs/
+runs/
+wandb/
+checkpoints/
+*.pt
+*.ckpt
