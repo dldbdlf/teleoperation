@@ -261,7 +261,7 @@ B1 DLS IK + posture homing · B2 SEW-Mimic (논문 기준 재구현, 공식 코�
 
 | 주차 | 작업 | 산출물 / 완료 기준 |
 |---|---|---|
-| 0–1 | **하드웨어·API 확인**: pyAgxArm (공식 Python SDK), `nero_description` URDF 출처 확인, REVO2 SDK/ROS2 (리셀러 문서만 확인됨 → BrainCo 공식 자료 확보), RGB-D 카메라 모델, TRIDOT 장갑 모델·데이터 형식 | `docs/hardware_inventory.md` |
+| 0–1 | **하드웨어·API 확인**: pyAgxArm (공식 Python SDK), `nero_description` URDF 출처 확인, REVO2 SDK/ROS2 (리셀러 문서만 확인됨 → BrainCo 공식 자료 확보), RGB-D 카메라 모델, TRIDOT 장갑 모델·데이터 형식 | `share/docs/hardware_inventory.md` |
 | 1–2 | Stage 2: URDF FK 검증 (실기 joint 읽기 vs FK), **SRS 여부 판정**, torso/virtual-shoulder 프레임 정의 | `02_kinematics_validation.md` |
 | 2–3 | 기준 측정 rig 구축 및 정확도 검증 | 기준 좌표 오차 보고 |
 | 3–5 | 데이터 수집 (4–6명) → **E1, E2** | Go/No-Go 결정 |

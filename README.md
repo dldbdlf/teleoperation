@@ -12,13 +12,13 @@ Vision 기반 Human-to-Robot 원격조작을 위한 학습형 오차 보정 Reta
 
 | Stage | 문서 | 상태 |
 |---|---|---|
-| 1. Literature Review & Novelty Audit | [docs/01_literature_novelty_audit.md](docs/01_literature_novelty_audit.md) | 초안 |
-| 2. Coordinate & Kinematics Validation | `docs/02_kinematics_validation.md` | 예정 |
-| 3. Baseline Failure Analysis | `docs/03_baseline_failure_analysis.md` | 예정 |
-| 4. Proposed Solver Development | `docs/04_proposed_solver.md` | 예정 |
-| 5. Benchmark & Ablation | `docs/05_benchmark_results.md` | 예정 |
-| 6. Real-Robot Validation | `docs/06_real_robot_evaluation.md` | 예정 |
-| 7. Publication Assessment | `docs/07_publication_assessment.md` | 예정 |
+| 1. Literature Review & Novelty Audit | [share/docs/01_literature_novelty_audit.md](share/docs/01_literature_novelty_audit.md) | 초안 |
+| 2. Coordinate & Kinematics Validation | `share/docs/02_kinematics_validation.md` | 예정 |
+| 3. Baseline Failure Analysis | `share/docs/03_baseline_failure_analysis.md` | 예정 |
+| 4. Proposed Solver Development | `share/docs/04_proposed_solver.md` | 예정 |
+| 5. Benchmark & Ablation | `share/docs/05_benchmark_results.md` | 예정 |
+| 6. Real-Robot Validation | `share/docs/06_real_robot_evaluation.md` | 예정 |
+| 7. Publication Assessment | `share/docs/07_publication_assessment.md` | 예정 |
 
 ## 현재 주 후보 알고리즘
 
@@ -27,7 +27,15 @@ Vision 기반 Human-to-Robot 원격조작을 위한 학습형 오차 보정 Reta
 ## 협업
 
 - 규칙: [CONTRIBUTING.md](CONTRIBUTING.md)
-- 결정 기록: [docs/decisions.md](docs/decisions.md)
+- 결정 기록: [share/decision.md](share/decision.md) (중요한 결정은 이 파일에만 기록)
+
+## 폴더 구조
+
+| 폴더 | 용도 |
+|---|---|
+| [yuil/](yuil/) | yuil 개인 작업 |
+| [headam/](headam/) | headam 개인 작업 |
+| [share/](share/) | 공동 결과물 (단계별 문서, 결정 기록, 공동 코드) |
 
 ## 원칙
 
