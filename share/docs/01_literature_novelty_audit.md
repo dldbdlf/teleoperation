@@ -106,6 +106,15 @@
 
 **권장: C1을 주 Contribution으로**, C3는 C1의 temporal term에 흡수 (ablation), C2와 Candidate A/B(residual MLP, learned swivel)는 baseline으로 사용.
 
+### C0. 현행 프로토타입: AprilTag 상대 손목 추종 (알고리즘 후보 아님)
+
+손등 AprilTag 1개를 단안 웹캠으로 추적하고, clutch를 켠 시점부터의 상대 변위·회전을 NERO tcp에 더해 MoveIt Servo로 추종한다. 세부 구성과 매핑 수식은 [prototype_apriltag_wrist_teleop.md](prototype_apriltag_wrist_teleop.md) 참고. 정량 측정은 아직 없다.
+
+- **신규성: 없음.** 마커 기반 상대 매핑 teleop은 표준 구성이며 C1–C3와 같은 축에서 비교하지 않는다.
+- **연구 설정과의 차이:** 절대 대응이 없어 Embodiment 오차를 정의할 수 없고, 팔꿈치(ψ)를 다루지 않으며, Servo에는 null-space 목표를 넣을 수 없다. 따라서 E3 baseline(B1–B6)으로 직접 쓰기 어렵다.
+- **활용:** (1) E.0 기준 측정 rig의 손목 pose 기준값 후보 (정확도 검증 필요), (2) 실기 단계의 안전·통신 인프라, (3) 사용자 연구에서 "conventional teleop" 참고 조건.
+- **부수 확인:** NERO URDF는 SRS 구조 (J1–J3, J5–J7 축 교차, elbow offset 없음, |SE| 0.310 m, |EW| 0.270 m). D.3의 ψ 1-D 축소가 URDF 기준으로 성립한다. 실기 FK 검증은 Stage 2에서 한다.
+
 ---
 
 ## Part D. Recommended Mathematical Formulation (C1)
