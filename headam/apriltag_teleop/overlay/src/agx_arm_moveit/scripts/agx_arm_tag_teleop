@@ -1,0 +1,316 @@
+#!/usr/bin/env python3
+# -*-coding:utf8-*-
+"""AprilTag hand teleop for MoveIt Servo (servo.launch.py + tag_tracking.launch.py).
+
+While the clutch is engaged, tcp_link follows the motion of the tag on the
+operator's hand relative to where the clutch was engaged. Releasing the clutch
+lets the operator reposition their hand without moving the robot.
+"""
+import queue
+import select
+import sys
+import termios
+import threading
+import tty
+
+import numpy as np
+import rclpy
+from geometry_msgs.msg import TwistStamped
+from rclpy.executors import SingleThreadedExecutor
+from rclpy.node import Node
+from rclpy.time import Time
+from scipy.spatial.transform import Rotation
+from std_srvs.srv import Trigger
+from tf2_ros import Buffer, TransformException, TransformListener
+
+HELP = """
+AgileX Arm AprilTag hand teleop
+-------------------------------
+  space : clutch on / off  (now {clutch})
+  t     : follow hand rotation on / off  (now {rotation})
+  + / - : hand-to-robot motion scale (now {scale:.2f})
+  q     : quit
+Tag: {tag}
+"""
+
+
+def parse_axis_map(text):
+    """'z,-x,-y' -> 3x3 matrix whose rows give base x/y/z in camera axes."""
+    axes = {"x": 0, "y": 1, "z": 2}
+    rows = []
+    for item in text.replace(" ", "").split(","):
+        sign = -1.0 if item.startswith("-") else 1.0
+        row = np.zeros(3)
+        row[axes[item.lstrip("+-")]] = sign
+        rows.append(row)
+    m = np.array(rows)
+    if m.shape != (3, 3) or not np.isclose(np.linalg.det(m), 1.0):
+        raise ValueError(f"axis_map '{text}' is not a right-handed axis permutation")
+    return m
+
+
+def target_pose(ref_tag, tag, ref_tcp, axis_map, scale, follow_rotation):
+    """Hand motion since the clutch engaged, mapped onto the tcp pose at that moment."""
+    (p_tag0, r_tag0), (p_tag, r_tag), (p_tcp0, r_tcp0) = ref_tag, tag, ref_tcp
+    p_target = p_tcp0 + scale * axis_map @ (p_tag - p_tag0)
+    if not follow_rotation:
+        return p_target, r_tcp0
+    # Rotation of the hand, expressed in the camera frame, then in the base frame.
+    delta_cam = (r_tag * r_tag0.inv()).as_matrix()
+    delta_base = Rotation.from_matrix(axis_map @ delta_cam @ axis_map.T)
+    return p_target, delta_base * r_tcp0
+
+
+def clip_norm(v, limit):
+    n = np.linalg.norm(v)
+    return v * (limit / n) if n > limit else v
+
+
+class TagTeleop(Node):
+    def __init__(self):
+        super().__init__("tag_teleop")
+        self.declare_parameter("servo_node", "servo_node")
+        self.declare_parameter("base_frame", "base_link")
+        self.declare_parameter("ee_frame", "tcp_link")
+        self.declare_parameter("camera_frame", "camera")
+        self.declare_parameter("tag_frame", "hand_tag")
+        # Rows = robot base x/y/z in camera axes. Default: operator faces the camera,
+        # robot works toward its -x (nero). For piper (works toward +x) use "-z,x,-y".
+        self.declare_parameter("axis_map", "z,-x,-y")
+        self.declare_parameter("motion_scale", 0.5)
+        self.declare_parameter("linear_gain", 8.0)  # [1/s]
+        self.declare_parameter("angular_gain", 8.0)  # [1/s]
+        # Must match scale.linear / scale.rotational in servo.yaml (command_in_type: unitless)
+        self.declare_parameter("servo_linear_scale", 0.4)
+        self.declare_parameter("servo_rotational_scale", 2.0)
+        self.declare_parameter("smoothing", 0.5)  # 0 = raw tag pose, closer to 1 = smoother
+        self.declare_parameter("tag_timeout", 0.2)  # [s] older detections count as lost
+        # The arm holds still through dropouts shorter than this, then the clutch releases.
+        self.declare_parameter("lost_timeout", 1.0)  # [s]
+        self.declare_parameter("rate", 50.0)  # [Hz]
+
+        gp = lambda name: self.get_parameter(name).value
+        servo = gp("servo_node")
+        self.base_frame = gp("base_frame")
+        self.ee_frame = gp("ee_frame")
+        self.camera_frame = gp("camera_frame")
+        self.tag_frame = gp("tag_frame")
+        self.axis_map = parse_axis_map(gp("axis_map"))
+        self.scale = gp("motion_scale")
+        self.linear_gain = gp("linear_gain")
+        self.angular_gain = gp("angular_gain")
+        self.servo_linear_scale = gp("servo_linear_scale")
+        self.servo_rotational_scale = gp("servo_rotational_scale")
+        self.smoothing = gp("smoothing")
+        self.tag_timeout = gp("tag_timeout")
+        self.lost_timeout = gp("lost_timeout")
+
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.twist_pub = self.create_publisher(
+            TwistStamped, f"{servo}/delta_twist_cmds", 10
+        )
+        self.start_client = self.create_client(Trigger, f"{servo}/start_servo")
+
+        self.clutch = False
+        self.follow_rotation = True
+        self.tag = None  # filtered (position, Rotation) in camera frame
+        self.tag_visible = False
+        self.ref_tag = None
+        self.ref_tcp = None
+        self.target = None  # last commanded tcp pose while clutched
+        self.last_seen = None
+        self.lost = False  # tag dropped out while clutched
+        self.status_changed = True
+        # Keys come from the terminal thread; they are applied in the control timer
+        # so that all state changes happen on the executor thread.
+        self.keys = queue.Queue()
+        self.create_timer(1.0 / gp("rate"), self._step)
+
+    def start_servo(self):
+        if not self.start_client.wait_for_service(timeout_sec=10.0):
+            self.get_logger().error("start_servo service not available")
+            return False
+        future = self.start_client.call_async(Trigger.Request())
+        rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
+        result = future.result()
+        if result is None or not result.success:
+            self.get_logger().error("Failed to start servo")
+            return False
+        return True
+
+    def _lookup(self, target, source):
+        tf = self.tf_buffer.lookup_transform(target, source, Time())
+        t, q = tf.transform.translation, tf.transform.rotation
+        stamp = Time.from_msg(tf.header.stamp)
+        return np.array([t.x, t.y, t.z]), Rotation.from_quat([q.x, q.y, q.z, q.w]), stamp
+
+    def _update_tag(self):
+        try:
+            p, r, stamp = self._lookup(self.camera_frame, self.tag_frame)
+        except TransformException:
+            return False
+        age = (self.get_clock().now() - stamp).nanoseconds * 1e-9
+        if age > self.tag_timeout:
+            return False
+        if self.tag is None or not self.tag_visible:
+            self.tag = (p, r)
+        else:
+            # Low-pass toward the new detection: lerp position, slerp rotation.
+            a = 1.0 - self.smoothing
+            p0, r0 = self.tag
+            self.tag = (p0 + a * (p - p0), r0 * Rotation.from_rotvec(a * (r0.inv() * r).as_rotvec()))
+        return True
+
+    def _tcp(self):
+        p, r, _ = self._lookup(self.base_frame, self.ee_frame)
+        return p, r
+
+    def _anchor(self, ref_tcp=None):
+        """Map the current tag pose onto ref_tcp (default: the current tcp pose)."""
+        if ref_tcp is None:
+            try:
+                ref_tcp = self._tcp()
+            except TransformException as e:
+                self.get_logger().warn(f"No {self.base_frame} -> {self.ee_frame} TF: {e}")
+                return False
+        self.ref_tcp = ref_tcp
+        self.ref_tag = self.tag
+        self.target = None
+        return True
+
+    def set_clutch(self, on):
+        if on:
+            if not self.tag_visible:
+                self.get_logger().warn("Tag not visible, clutch stays off")
+                return
+            if not self._anchor():
+                return
+            self.lost = False
+        elif self.clutch:
+            self._publish(np.zeros(3), np.zeros(3))
+        self.clutch = on
+        self.status_changed = True
+
+    def _publish(self, linear, angular):
+        msg = TwistStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self.base_frame
+        msg.twist.linear.x, msg.twist.linear.y, msg.twist.linear.z = linear.tolist()
+        msg.twist.angular.x, msg.twist.angular.y, msg.twist.angular.z = angular.tolist()
+        self.twist_pub.publish(msg)
+
+    def _step(self):
+        now = self.get_clock().now()
+        visible = self._update_tag()
+        if visible:
+            self.last_seen = now
+        if visible != self.tag_visible:
+            self.tag_visible = visible
+            # Short dropouts while clutched are handled below without redrawing the help.
+            if not self.clutch:
+                self.status_changed = True
+        while not self.keys.empty():
+            self.handle_key(self.keys.get())
+        if self.status_changed:
+            self.status_changed = False
+            print(self.help_text())
+        if not self.clutch:
+            return
+        if not visible:
+            lost_for = (now - self.last_seen).nanoseconds * 1e-9
+            if lost_for > self.lost_timeout:
+                self.get_logger().warn(f"Tag lost for {lost_for:.1f} s, clutch released")
+                self.set_clutch(False)
+            else:
+                self.lost = True
+                self._publish(np.zeros(3), np.zeros(3))
+            return
+        if self.lost:
+            # Resume from the last target instead of jumping to wherever the hand reappeared.
+            self.lost = False
+            if not self._anchor(self.target):
+                return
+        try:
+            p_tcp, r_tcp = self._tcp()
+        except TransformException:
+            return
+
+        p_target, r_target = target_pose(
+            self.ref_tag, self.tag, self.ref_tcp, self.axis_map, self.scale, self.follow_rotation
+        )
+        self.target = (p_target, r_target)
+        v = self.linear_gain * (p_target - p_tcp)
+        w = self.angular_gain * (r_target * r_tcp.inv()).as_rotvec()
+        # Unitless servo input: 1.0 = servo.yaml scale, so normalise and cap at full speed.
+        self._publish(
+            clip_norm(v / self.servo_linear_scale, 1.0),
+            clip_norm(w / self.servo_rotational_scale, 1.0),
+        )
+
+    def handle_key(self, key):
+        if key == " ":
+            self.set_clutch(not self.clutch)
+        elif key == "t":
+            self.follow_rotation = not self.follow_rotation
+        elif key in "+-":
+            step = 0.1 if key == "+" else -0.1
+            self.scale = min(2.0, max(0.1, self.scale + step))
+        else:
+            return
+        if self.clutch and key in "t+-":
+            self.set_clutch(True)  # re-anchor so the target does not jump
+        self.status_changed = True
+
+    def help_text(self):
+        return HELP.format(
+            clutch="ON" if self.clutch else "off",
+            rotation="on" if self.follow_rotation else "off",
+            scale=self.scale,
+            tag="visible" if self.tag_visible else "NOT visible",
+        )
+
+
+def _read_key(timeout):
+    if not select.select([sys.stdin], [], [], timeout)[0]:
+        return None
+    return sys.stdin.read(1)
+
+
+def main():
+    rclpy.init()
+    node = TagTeleop()
+    if not node.start_servo():
+        node.destroy_node()
+        rclpy.shutdown()
+        return
+
+    # /tf arrives at the joint state rate (~200 Hz); spinning in a thread keeps the
+    # buffer current, where spin_once in the key loop would let it fall behind.
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    spinner = threading.Thread(target=executor.spin, daemon=True)
+    spinner.start()
+
+    settings = termios.tcgetattr(sys.stdin)
+    try:
+        tty.setcbreak(sys.stdin.fileno())
+        while rclpy.ok():
+            key = _read_key(0.05)
+            if key == "q":
+                break
+            if key is not None:
+                node.keys.put(key)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
+        executor.shutdown()
+        if node.clutch:
+            node.set_clutch(False)
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

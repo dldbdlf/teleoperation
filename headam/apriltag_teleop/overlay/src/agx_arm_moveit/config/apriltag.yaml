@@ -1,0 +1,25 @@
+###############################################
+# apriltag_ros parameters for the hand tag
+# Loaded by launch/tag_tracking.launch.py.
+###############################################
+/**:
+  ros__parameters:
+    image_transport: raw
+    family: 36h11
+    # Edge of the black border in metres, white margin excluded. Measure the print.
+    size: 0.04
+    # 36h11 codes differ in >= 11 bits, so accepting 1 flipped bit is still safe
+    # and keeps the tag through motion blur.
+    max_hamming: 1
+    detector:
+      threads: 2
+      decimate: 1.0   # >1 detects faster on large images but loses range
+      blur: 0.0
+      refine: true
+      sharpening: 0.25
+      debug: false
+    # Tag 0 on the back of the hand, published as TF camera -> hand_tag
+    tag:
+      ids: [0]
+      frames: [hand_tag]
+      sizes: [0.04]

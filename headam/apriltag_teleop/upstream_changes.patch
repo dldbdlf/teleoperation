@@ -1,0 +1,155 @@
+diff --git a/scripts/agx_arm_install_deps.sh b/scripts/agx_arm_install_deps.sh
+old mode 100644
+new mode 100755
+diff --git a/src/agx_arm_moveit/CMakeLists.txt b/src/agx_arm_moveit/CMakeLists.txt
+index 9adb968..9ff9e44 100644
+--- a/src/agx_arm_moveit/CMakeLists.txt
++++ b/src/agx_arm_moveit/CMakeLists.txt
+@@ -8,5 +8,8 @@ ament_package()
+ install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME})
+ install(PROGRAMS
+   scripts/agx_arm_control_gate
++  scripts/agx_arm_servo_keyboard
++  scripts/agx_arm_tag_teleop
++  scripts/agx_arm_net_camera
+   DESTINATION lib/${PROJECT_NAME}
+ )
+diff --git a/src/agx_arm_moveit/README.md b/src/agx_arm_moveit/README.md
+index 3792041..c46506a 100644
+--- a/src/agx_arm_moveit/README.md
++++ b/src/agx_arm_moveit/README.md
+@@ -21,7 +21,7 @@
+ 
+ | 规划组 | 说明 | 预设状态 |
+ |--------|------|----------|
+-| `arm` | 机械臂主体 | `home` — 零位姿态 |
++| `arm` | 机械臂主体 | `home` — 零位姿态（奇异位形，Servo 无法在此笛卡尔点动）；`ready` — 肘部弯曲、末端朝下 |
+ | `gripper` | AgileX 夹爪（需 `effector_type:=agx_gripper`） | `gripper_open` — 完全张开<br>`gripper_half` — 半开<br>`gripper_close` — 完全闭合 |
+ | `hand` | Revo2 / Revo2 Pro / Revo2 Touch 灵巧手（`effector_type:=revo2` / `revo2_pro` / `revo2_touch`） | `hand_open` — 张开<br>`hand_half_close` — 半握<br>`hand_close` — 握拳 |
+ 
+diff --git a/src/agx_arm_moveit/README_EN.md b/src/agx_arm_moveit/README_EN.md
+index 19f27ad..efbd343 100644
+--- a/src/agx_arm_moveit/README_EN.md
++++ b/src/agx_arm_moveit/README_EN.md
+@@ -21,7 +21,7 @@
+ 
+ | Planning Group | Description | Preset States |
+ |----------------|-------------|---------------|
+-| `arm` | Robot arm body | `home` — zero position |
++| `arm` | Robot arm body | `home` — zero position (singular, Servo cannot jog Cartesian here); `ready` — elbow bent, tool pointing down |
+ | `gripper` | AgileX Gripper (requires `effector_type:=agx_gripper`) | `gripper_open` — fully open<br>`gripper_half` — half open<br>`gripper_close` — fully closed |
+ | `hand` | Revo2 / Revo2 Pro / Revo2 Touch dexterous hand (`effector_type:=revo2` / `revo2_pro` / `revo2_touch`) | `hand_open` — open<br>`hand_half_close` — half close<br>`hand_close` — fist |
+ 
+diff --git a/src/agx_arm_moveit/config/agx_arm.srdf.xacro b/src/agx_arm_moveit/config/agx_arm.srdf.xacro
+index a9a384b..7ac5812 100644
+--- a/src/agx_arm_moveit/config/agx_arm.srdf.xacro
++++ b/src/agx_arm_moveit/config/agx_arm.srdf.xacro
+@@ -7,6 +7,26 @@
+   <xacro:property name="arm_type" value="$(arg arm_type)" />
+   <xacro:property name="flange_link" value="${'link7' if arm_type == 'nero' else 'link6'}" />
+ 
++  <!-- Neighbouring Revo2 fingers move side by side and never touch, but their meshes sit
++       3-10 mm apart. Left enabled, they keep MoveIt Servo's self-collision slowdown on. -->
++  <xacro:macro name="revo2_neighbor_fingers" params="side a b">
++    <disable_collisions link1="${side}_${a}_proximal_link" link2="${side}_${b}_proximal_link" reason="Never" />
++    <disable_collisions link1="${side}_${a}_proximal_link" link2="${side}_${b}_distal_link" reason="Never" />
++    <disable_collisions link1="${side}_${a}_proximal_link" link2="${side}_${b}_touch_link" reason="Never" />
++    <disable_collisions link1="${side}_${a}_distal_link" link2="${side}_${b}_proximal_link" reason="Never" />
++    <disable_collisions link1="${side}_${a}_distal_link" link2="${side}_${b}_distal_link" reason="Never" />
++    <disable_collisions link1="${side}_${a}_distal_link" link2="${side}_${b}_touch_link" reason="Never" />
++    <disable_collisions link1="${side}_${a}_touch_link" link2="${side}_${b}_proximal_link" reason="Never" />
++    <disable_collisions link1="${side}_${a}_touch_link" link2="${side}_${b}_distal_link" reason="Never" />
++    <disable_collisions link1="${side}_${a}_touch_link" link2="${side}_${b}_touch_link" reason="Never" />
++  </xacro:macro>
++  <xacro:macro name="revo2_hand_extra_disables" params="side">
++    <xacro:revo2_neighbor_fingers side="${side}" a="index" b="middle" />
++    <xacro:revo2_neighbor_fingers side="${side}" a="middle" b="ring" />
++    <xacro:revo2_neighbor_fingers side="${side}" a="ring" b="pinky" />
++    <disable_collisions link1="flange_link" link2="${side}_thumb_metacarpal_link" reason="Never" />
++  </xacro:macro>
++
+   <!-- ======================== ARM GROUP ======================== -->
+   <group name="arm">
+     <chain base_link="base_link" tip_link="tcp_link" />
+@@ -105,6 +125,7 @@
+     <passive_joint name="left_ring_distal_joint" />
+     <passive_joint name="left_pinky_distal_joint" />
+     <!-- Left hand disable collisions -->
++    <xacro:revo2_hand_extra_disables side="left" />
+     <disable_collisions link1="left_base_link" link2="left_index_distal_link" reason="Never" />
+     <disable_collisions link1="left_base_link" link2="left_index_proximal_link" reason="Adjacent" />
+     <disable_collisions link1="left_base_link" link2="left_index_touch_link" reason="Never" />
+@@ -246,6 +267,7 @@
+     <passive_joint name="right_ring_distal_joint" />
+     <passive_joint name="right_pinky_distal_joint" />
+     <!-- Right hand disable collisions -->
++    <xacro:revo2_hand_extra_disables side="right" />
+     <disable_collisions link1="right_base_link" link2="right_index_distal_link" reason="Never" />
+     <disable_collisions link1="right_base_link" link2="right_index_proximal_link" reason="Adjacent" />
+     <disable_collisions link1="right_base_link" link2="right_index_touch_link" reason="Never" />
+@@ -357,6 +379,45 @@
+     </group_state>
+   </xacro:if>
+ 
++  <!-- ======================== READY STATE ======================== -->
++  <!-- Elbow bent, tool pointing straight down. "home" (all zeros) is a singular pose where
++       MoveIt Servo refuses Cartesian commands; start teleop from here instead.
++       Jacobian condition number ~10-11 on every arm, well below Servo's threshold of 100. -->
++  <xacro:if value="$(eval arm_type in ['piper', 'piper_l', 'piper_h'])">
++    <!-- tcp ~(0.25, 0, 0.21) m on piper -->
++    <group_state name="ready" group="arm">
++      <joint name="joint1" value="0" />
++      <joint name="joint2" value="1.5" />
++      <joint name="joint3" value="-0.9" />
++      <joint name="joint4" value="0" />
++      <joint name="joint5" value="1.0" />
++      <joint name="joint6" value="0" />
++    </group_state>
++  </xacro:if>
++  <xacro:if value="$(eval arm_type == 'piper_x')">
++    <!-- piper_x wrist pitches about joint4, not joint5; tcp ~(0.27, 0, 0.18) m -->
++    <group_state name="ready" group="arm">
++      <joint name="joint1" value="0" />
++      <joint name="joint2" value="1.5" />
++      <joint name="joint3" value="-0.9" />
++      <joint name="joint4" value="1.0" />
++      <joint name="joint5" value="0" />
++      <joint name="joint6" value="0" />
++    </group_state>
++  </xacro:if>
++  <xacro:if value="$(eval arm_type == 'nero')">
++    <!-- nero works toward -x (see test/nero/test_move_p.yaml); tcp ~(-0.30, 0, 0.42) m -->
++    <group_state name="ready" group="arm">
++      <joint name="joint1" value="0" />
++      <joint name="joint2" value="0.1" />
++      <joint name="joint3" value="0" />
++      <joint name="joint4" value="1.5" />
++      <joint name="joint5" value="-1.5708" />
++      <joint name="joint6" value="0" />
++      <joint name="joint7" value="0" />
++    </group_state>
++  </xacro:if>
++
+   <!-- ======================== ARM DISABLE COLLISIONS ======================== -->
+   <disable_collisions link1="base_link" link2="link1" reason="Adjacent" />
+   <disable_collisions link1="base_link" link2="link2" reason="Never" />
+diff --git a/src/agx_arm_moveit/package.xml b/src/agx_arm_moveit/package.xml
+index 50fbeaf..7e55a9a 100644
+--- a/src/agx_arm_moveit/package.xml
++++ b/src/agx_arm_moveit/package.xml
+@@ -33,6 +33,15 @@
+   <exec_depend>rclpy</exec_depend>
+   <exec_depend>action_msgs</exec_depend>
+   <exec_depend>std_srvs</exec_depend>
++  <exec_depend>moveit_servo</exec_depend>
++  <exec_depend>control_msgs</exec_depend>
++  <exec_depend>geometry_msgs</exec_depend>
++  <exec_depend>apriltag_ros</exec_depend>
++  <exec_depend>v4l2_camera</exec_depend>
++  <exec_depend>python3-scipy</exec_depend>
++  <exec_depend>python3-opencv</exec_depend>
++  <exec_depend>python3-yaml</exec_depend>
++  <exec_depend>apriltag_msgs</exec_depend>
+ 
+   <export>
+     <build_type>ament_cmake</build_type>
