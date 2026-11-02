@@ -28,6 +28,7 @@ Vision 기반 Human-to-Robot 원격조작을 위한 학습형 오차 보정 Reta
 
 - 규칙: [CONTRIBUTING.md](CONTRIBUTING.md)
 - 결정 기록: [share/decision.md](share/decision.md) (중요한 결정은 이 파일에만 기록)
+- 로드맵: [share/roadmap.md](share/roadmap.md)
 
 ## 폴더 구조
 
