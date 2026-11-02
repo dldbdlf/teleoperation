@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+# -*-coding:utf8-*-
+"""Keyboard teleop for MoveIt Servo (servo.launch.py)."""
+import select
+import sys
+import termios
+import time
+import tty
+
+import rclpy
+from control_msgs.msg import JointJog
+from geometry_msgs.msg import TwistStamped
+from rclpy.node import Node
+from std_srvs.srv import Trigger
+
+HELP = """
+AgileX Arm MoveIt Servo keyboard teleop
+---------------------------------------
+Cartesian (frame: {frame}):
+  Arrow Up/Down    : +X / -X        . / ;   : +Z / -Z
+  Arrow Left/Right : +Y / -Y
+  u / o : roll  +/-    i / k : pitch +/-    j / l : yaw +/-
+Joint jog:
+  1 ~ 7 : jog joint N     r : reverse joint direction (now {sign})
+Other:
+  w : command in base frame   e : command in end-effector frame
+  + / - : speed scale up / down (now {speed:.1f})
+  space : stop                q : quit
+"""
+
+CARTESIAN_KEYS = {
+    "\x1b[A": ("linear", "x", 1.0),
+    "\x1b[B": ("linear", "x", -1.0),
+    "\x1b[D": ("linear", "y", 1.0),
+    "\x1b[C": ("linear", "y", -1.0),
+    ".": ("linear", "z", 1.0),
+    ";": ("linear", "z", -1.0),
+    "u": ("angular", "x", 1.0),
+    "o": ("angular", "x", -1.0),
+    "i": ("angular", "y", 1.0),
+    "k": ("angular", "y", -1.0),
+    "j": ("angular", "z", 1.0),
+    "l": ("angular", "z", -1.0),
+}
+
+# Terminal key auto-repeat starts after ~0.5 s, so keep a command alive
+# a little longer than that to avoid a stop/start stutter while holding a key.
+HOLD_TIMEOUT = 0.6
+
+
+class ServoKeyboard(Node):
+    def __init__(self):
+        super().__init__("servo_keyboard")
+        self.declare_parameter("servo_node", "servo_node")
+        self.declare_parameter("base_frame", "base_link")
+        self.declare_parameter("ee_frame", "tcp_link")
+        self.declare_parameter("joint_count", 6)
+
+        servo = self.get_parameter("servo_node").value
+        self.base_frame = self.get_parameter("base_frame").value
+        self.ee_frame = self.get_parameter("ee_frame").value
+        self.joint_names = [
+            f"joint{i}" for i in range(1, self.get_parameter("joint_count").value + 1)
+        ]
+
+        self.twist_pub = self.create_publisher(
+            TwistStamped, f"{servo}/delta_twist_cmds", 10
+        )
+        self.joint_pub = self.create_publisher(
+            JointJog, f"{servo}/delta_joint_cmds", 10
+        )
+        self.start_client = self.create_client(Trigger, f"{servo}/start_servo")
+
+        self.frame = self.base_frame
+        self.joint_sign = 1.0
+        self.speed = 1.0
+        self.active = None  # ("twist", (kind, axis, value)) / ("joint", index)
+        self.last_key_time = 0.0
+        self.create_timer(0.02, self._publish)
+
+    def start_servo(self):
+        if not self.start_client.wait_for_service(timeout_sec=10.0):
+            self.get_logger().error("start_servo service not available")
+            return False
+        future = self.start_client.call_async(Trigger.Request())
+        rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
+        result = future.result()
+        if result is None or not result.success:
+            self.get_logger().error("Failed to start servo")
+            return False
+        return True
+
+    def handle_key(self, key):
+        now = time.monotonic()
+        if key in CARTESIAN_KEYS:
+            self.active = ("twist", CARTESIAN_KEYS[key])
+            self.last_key_time = now
+        elif key.isdigit() and 1 <= int(key) <= len(self.joint_names):
+            self.active = ("joint", int(key) - 1)
+            self.last_key_time = now
+        elif key == "r":
+            self.joint_sign = -self.joint_sign
+            return True
+        elif key == "w":
+            self.frame = self.base_frame
+            return True
+        elif key == "e":
+            self.frame = self.ee_frame
+            return True
+        elif key == "+":
+            self.speed = min(1.0, self.speed + 0.1)
+            return True
+        elif key == "-":
+            self.speed = max(0.1, self.speed - 0.1)
+            return True
+        elif key == " ":
+            self.active = None
+        return False
+
+    def _publish(self):
+        if self.active is None:
+            return
+        if time.monotonic() - self.last_key_time > HOLD_TIMEOUT:
+            self.active = None
+            return
+
+        stamp = self.get_clock().now().to_msg()
+        mode, data = self.active
+        if mode == "twist":
+            kind, axis, value = data
+            msg = TwistStamped()
+            msg.header.stamp = stamp
+            msg.header.frame_id = self.frame
+            setattr(getattr(msg.twist, kind), axis, value * self.speed)
+            self.twist_pub.publish(msg)
+        else:
+            msg = JointJog()
+            msg.header.stamp = stamp
+            msg.header.frame_id = self.base_frame
+            msg.joint_names = [self.joint_names[data]]
+            msg.velocities = [self.joint_sign * self.speed]
+            self.joint_pub.publish(msg)
+
+    def help_text(self):
+        sign = "+" if self.joint_sign > 0 else "-"
+        return HELP.format(frame=self.frame, sign=sign, speed=self.speed)
+
+
+def _read_key(timeout):
+    if not select.select([sys.stdin], [], [], timeout)[0]:
+        return None
+    key = sys.stdin.read(1)
+    if key == "\x1b":
+        # Arrow keys arrive as a 3-byte escape sequence
+        key += sys.stdin.read(2)
+    return key
+
+
+def main():
+    rclpy.init()
+    node = ServoKeyboard()
+    if not node.start_servo():
+        node.destroy_node()
+        rclpy.shutdown()
+        return
+
+    settings = termios.tcgetattr(sys.stdin)
+    try:
+        tty.setcbreak(sys.stdin.fileno())
+        print(node.help_text())
+        while rclpy.ok():
+            key = _read_key(0.01)
+            if key == "q":
+                break
+            if key is not None and node.handle_key(key):
+                print(node.help_text())
+            rclpy.spin_once(node, timeout_sec=0)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

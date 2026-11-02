@@ -1,0 +1,60 @@
+###############################################
+# MoveIt Servo (realtime teleop) parameters
+# Loaded by launch/servo.launch.py under the "moveit_servo" namespace.
+# joint_topic is overridden at launch time (control_topic / feedback_topic).
+###############################################
+use_gazebo: false
+
+## Properties of incoming commands
+command_in_type: "unitless" # [-1, 1] as if from a joystick / keyboard
+scale:
+  linear: 0.4      # Max linear velocity [m/s]
+  rotational: 2.0  # Max angular velocity [rad/s]
+  joint: 0.5       # Max joint velocity [rad/s]
+
+## Properties of outgoing commands
+publish_period: 0.01 # 100 Hz
+low_latency_mode: false
+command_out_type: trajectory_msgs/JointTrajectory
+publish_joint_positions: true
+publish_joint_velocities: true
+publish_joint_accelerations: false
+
+## Plugins for smoothing outgoing commands
+smoothing_filter_plugin_name: "online_signal_smoothing::ButterworthFilterPlugin"
+
+# move_group owns the primary planning scene
+is_primary_planning_scene_monitor: false
+
+## MoveIt properties
+move_group_name: arm
+planning_frame: base_link
+
+## Other frames
+ee_frame_name: tcp_link
+robot_link_command_frame: base_link
+
+## Stopping behaviour
+incoming_command_timeout: 0.1
+num_outgoing_halt_msgs_to_publish: 4
+
+## Singularities and joint limits
+# The Jacobian condition number mixes m and rad, so it runs high on a small arm:
+# normal Piper working poses sit around 20-80, the zero pose is ~28000 (true singularity).
+lower_singularity_threshold: 100.0
+hard_stop_singularity_threshold: 200.0
+joint_limit_margin: 0.1
+leaving_singularity_threshold_multiplier: 2.0
+
+## Topic names (relative, so they follow the launch namespace)
+cartesian_command_in_topic: ~/delta_twist_cmds
+joint_command_in_topic: ~/delta_joint_cmds
+joint_topic: control/joint_states
+status_topic: ~/status
+command_out_topic: arm_controller/joint_trajectory
+
+## Collision checking
+check_collisions: true
+collision_check_rate: 10.0
+self_collision_proximity_threshold: 0.01
+scene_collision_proximity_threshold: 0.02

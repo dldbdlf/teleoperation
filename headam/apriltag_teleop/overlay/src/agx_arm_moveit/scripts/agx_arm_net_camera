@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+# -*-coding:utf8-*-
+"""Publish JPEG frames from scripts/webcam_stream_windows.py as a ROS camera.
+
+Publishes image_raw (bgr8) and camera_info, and serves set_camera_info so that
+camera_calibration's COMMIT writes the calibration to camera_info_url.
+"""
+import array
+import os
+import select
+import socket
+import struct
+import threading
+from urllib.parse import urlparse
+
+import cv2
+import numpy as np
+import rclpy
+import yaml
+from rclpy.node import Node
+from sensor_msgs.msg import CameraInfo, Image
+from sensor_msgs.srv import SetCameraInfo
+
+
+def load_camera_info(path):
+    """Read the ost.yaml format written by camera_calibration."""
+    with open(path) as f:
+        d = yaml.safe_load(f)
+    info = CameraInfo()
+    info.width, info.height = d["image_width"], d["image_height"]
+    info.distortion_model = d["distortion_model"]
+    info.k = d["camera_matrix"]["data"]
+    info.d = d["distortion_coefficients"]["data"]
+    info.r = d["rectification_matrix"]["data"]
+    info.p = d["projection_matrix"]["data"]
+    return info
+
+
+def save_camera_info(path, info, name):
+    def mat(rows, cols, data):
+        return {"rows": rows, "cols": cols, "data": [float(v) for v in data]}
+
+    d = {
+        "image_width": info.width,
+        "image_height": info.height,
+        "camera_name": name,
+        "camera_matrix": mat(3, 3, info.k),
+        "distortion_model": info.distortion_model,
+        "distortion_coefficients": mat(1, len(info.d), info.d),
+        "rectification_matrix": mat(3, 3, info.r),
+        "projection_matrix": mat(3, 4, info.p),
+    }
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        yaml.safe_dump(d, f, sort_keys=False)
+
+
+def recv_exact(sock, n):
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            raise ConnectionError("stream closed")
+        buf += chunk
+    return bytes(buf)
+
+
+class NetCamera(Node):
+    def __init__(self):
+        super().__init__("net_camera")
+        # webcam_stream_windows.py connects to this port at the WSL VM address.
+        self.declare_parameter("port", 5600)
+        self.declare_parameter("camera_frame_id", "camera")
+        self.declare_parameter("camera_name", "webcam")
+        self.declare_parameter(
+            "camera_info_url",
+            "file://" + os.path.expanduser("~/.ros/camera_info/webcam.yaml"),
+        )
+
+        gp = lambda name: self.get_parameter(name).value
+        self.port = gp("port")
+        self.frame_id = gp("camera_frame_id")
+        self.camera_name = gp("camera_name")
+        self.info_path = urlparse(gp("camera_info_url")).path
+
+        self.info = CameraInfo()
+        if os.path.exists(self.info_path):
+            self.info = load_camera_info(self.info_path)
+            self.get_logger().info(f"Loaded calibration {self.info_path}")
+        else:
+            self.get_logger().warn(
+                f"No calibration at {self.info_path}; camera_info is empty until you calibrate"
+            )
+
+        self.image_pub = self.create_publisher(Image, "image_raw", 1)
+        self.info_pub = self.create_publisher(CameraInfo, "camera_info", 1)
+        self.create_service(SetCameraInfo, "set_camera_info", self._set_camera_info)
+
+        # Bind here so a port clash (usually another net_camera still running) stops
+        # the node at startup instead of leaving it alive with no stream.
+        self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            self.server.bind(("0.0.0.0", self.port))
+        except OSError as e:
+            raise SystemExit(
+                f"Port {self.port} is in use ({e.strerror}): stop the other "
+                "tag_tracking.launch.py / agx_arm_net_camera first"
+            )
+        self.server.listen(1)
+        threading.Thread(target=self._receive, daemon=True).start()
+
+    def _set_camera_info(self, request, response):
+        try:
+            save_camera_info(self.info_path, request.camera_info, self.camera_name)
+        except OSError as e:
+            response.success, response.status_message = False, str(e)
+            return response
+        self.info = request.camera_info
+        self.get_logger().info(f"Saved calibration to {self.info_path}")
+        response.success = True
+        return response
+
+    def _receive(self):
+        self.get_logger().info(
+            f"Waiting for webcam_stream_windows.py on port {self.port}"
+        )
+        while rclpy.ok():
+            sock, addr = self.server.accept()
+            try:
+                sock.settimeout(3.0)
+                self.get_logger().info(f"Receiving from {addr[0]}")
+                while rclpy.ok():
+                    (size,) = struct.unpack("!I", recv_exact(sock, 4))
+                    jpg = recv_exact(sock, size)
+                    # Frames already queued behind this one mean we are falling behind:
+                    # skip decoding so the published image stays the newest one.
+                    if select.select([sock], [], [], 0)[0]:
+                        continue
+                    frame = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
+                    if frame is not None:
+                        self._publish(frame)
+            except OSError as e:
+                self.get_logger().warn(f"Stream from {addr[0]} ended ({e})")
+            finally:
+                sock.close()
+
+    def _publish(self, frame):
+        stamp = self.get_clock().now().to_msg()
+        img = Image()
+        img.header.stamp = stamp
+        img.header.frame_id = self.frame_id
+        img.height, img.width = frame.shape[:2]
+        img.encoding = "bgr8"
+        img.step = img.width * 3
+        # bytes would be range-checked element by element (~50 ms per frame).
+        img.data = array.array("B", frame.tobytes())
+        self.image_pub.publish(img)
+
+        self.info.header.stamp = stamp
+        self.info.header.frame_id = self.frame_id
+        if not self.info.width:
+            self.info.width, self.info.height = img.width, img.height
+        self.info_pub.publish(self.info)
+
+
+def main():
+    rclpy.init()
+    node = NetCamera()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.try_shutdown()
+
+
+if __name__ == "__main__":
+    main()
