@@ -1,0 +1,182 @@
+{
+  "meta": {
+    "elbow_down_deg": 30,
+    "n_per_set": 1000,
+    "psi_grid": 180,
+    "seed": 0,
+    "box": [
+      [
+        -0.6,
+        -0.1
+      ],
+      [
+        -0.4,
+        0.4
+      ],
+      [
+        0.0,
+        0.7
+      ]
+    ],
+    "reach_J4_m": [
+      0.28067758444281576,
+      0.5800099869691067
+    ],
+    "sampled_reach_m": [
+      0.3006775844428158,
+      0.56
+    ]
+  },
+  "rows": {
+    "ready \u00b115\u00b0": {
+      "feasible_pct": {
+        "nominal": 97.89999999999999,
+        "none": 100.0,
+        "relax_J1": 97.89999999999999,
+        "relax_J2": 98.5,
+        "relax_J3": 97.89999999999999,
+        "relax_J4": 98.5,
+        "relax_J5": 98.5,
+        "relax_J6": 100.0,
+        "relax_J7": 98.5
+      },
+      "elbow_down_pct": {
+        "nominal": 14.6,
+        "none": 100.0,
+        "relax_J1": 14.6,
+        "relax_J2": 41.699999999999996,
+        "relax_J3": 14.6,
+        "relax_J4": 16.6,
+        "relax_J5": 16.6,
+        "relax_J6": 57.3,
+        "relax_J7": 31.900000000000002
+      },
+      "median_arc_deg_nominal": 180.0
+    },
+    "ready \u00b130\u00b0": {
+      "feasible_pct": {
+        "nominal": 97.39999999999999,
+        "none": 100.0,
+        "relax_J1": 97.39999999999999,
+        "relax_J2": 98.2,
+        "relax_J3": 97.39999999999999,
+        "relax_J4": 98.2,
+        "relax_J5": 98.2,
+        "relax_J6": 100.0,
+        "relax_J7": 98.2
+      },
+      "elbow_down_pct": {
+        "nominal": 15.6,
+        "none": 100.0,
+        "relax_J1": 15.7,
+        "relax_J2": 39.2,
+        "relax_J3": 15.7,
+        "relax_J4": 17.7,
+        "relax_J5": 17.7,
+        "relax_J6": 63.1,
+        "relax_J7": 35.8
+      },
+      "median_arc_deg_nominal": 182.0
+    },
+    "ready \u00b145\u00b0": {
+      "feasible_pct": {
+        "nominal": 96.5,
+        "none": 100.0,
+        "relax_J1": 96.5,
+        "relax_J2": 97.8,
+        "relax_J3": 96.5,
+        "relax_J4": 97.8,
+        "relax_J5": 97.8,
+        "relax_J6": 100.0,
+        "relax_J7": 98.1
+      },
+      "elbow_down_pct": {
+        "nominal": 16.6,
+        "none": 100.0,
+        "relax_J1": 16.900000000000002,
+        "relax_J2": 41.6,
+        "relax_J3": 16.900000000000002,
+        "relax_J4": 18.7,
+        "relax_J5": 18.7,
+        "relax_J6": 62.6,
+        "relax_J7": 35.699999999999996
+      },
+      "median_arc_deg_nominal": 180.0
+    },
+    "ready \u00b160\u00b0": {
+      "feasible_pct": {
+        "nominal": 96.8,
+        "none": 100.0,
+        "relax_J1": 96.8,
+        "relax_J2": 98.0,
+        "relax_J3": 96.8,
+        "relax_J4": 97.89999999999999,
+        "relax_J5": 97.89999999999999,
+        "relax_J6": 100.0,
+        "relax_J7": 98.0
+      },
+      "elbow_down_pct": {
+        "nominal": 17.2,
+        "none": 100.0,
+        "relax_J1": 18.099999999999998,
+        "relax_J2": 42.699999999999996,
+        "relax_J3": 18.099999999999998,
+        "relax_J4": 20.4,
+        "relax_J5": 19.6,
+        "relax_J6": 58.699999999999996,
+        "relax_J7": 36.199999999999996
+      },
+      "median_arc_deg_nominal": 172.0
+    },
+    "ready \u00b190\u00b0": {
+      "feasible_pct": {
+        "nominal": 94.8,
+        "none": 100.0,
+        "relax_J1": 94.8,
+        "relax_J2": 95.5,
+        "relax_J3": 94.8,
+        "relax_J4": 95.3,
+        "relax_J5": 95.3,
+        "relax_J6": 100.0,
+        "relax_J7": 97.5
+      },
+      "elbow_down_pct": {
+        "nominal": 19.400000000000002,
+        "none": 100.0,
+        "relax_J1": 20.0,
+        "relax_J2": 45.1,
+        "relax_J3": 20.0,
+        "relax_J4": 21.8,
+        "relax_J5": 21.0,
+        "relax_J6": 60.199999999999996,
+        "relax_J7": 37.4
+      },
+      "median_arc_deg_nominal": 160.0
+    },
+    "uniform SO(3)": {
+      "feasible_pct": {
+        "nominal": 73.2,
+        "none": 100.0,
+        "relax_J1": 73.2,
+        "relax_J2": 76.1,
+        "relax_J3": 73.2,
+        "relax_J4": 74.2,
+        "relax_J5": 74.2,
+        "relax_J6": 100.0,
+        "relax_J7": 97.5
+      },
+      "elbow_down_pct": {
+        "nominal": 28.7,
+        "none": 100.0,
+        "relax_J1": 31.0,
+        "relax_J2": 44.6,
+        "relax_J3": 31.0,
+        "relax_J4": 32.800000000000004,
+        "relax_J5": 30.599999999999998,
+        "relax_J6": 64.2,
+        "relax_J7": 49.8
+      },
+      "median_arc_deg_nominal": 118.0
+    }
+  }
+}
