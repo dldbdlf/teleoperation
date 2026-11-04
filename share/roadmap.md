@@ -4,6 +4,7 @@
 >
 > 기존 연구 방향 유지: 단일 RGB-D(D415) → 사람 팔 관측·불확실성 → NERO 7-DoF Feasible-MAP → 실기, REVO2 Pro 후속 통합. 
 > **실시간 추론에는 장갑/마커/2번째 카메라를 사용하지 않는다.** D435i/마커/모션캡처는 학습·평가 시 Ground Truth 취득용으로만 사용 가능하다.
+> **실험별 실행 순서·비교군·데이터·지표·재현성 규격:** [docs/experiment_roadmap.md](docs/experiment_roadmap.md) (EX00–EX10)
 > 일정·Go/No-Go·Contribution 가설은 팀 리뷰 후 [decision.md](decision.md)에 확정 기록한다. 이번 변경은 의사결정 확정이나 실험 성공 주장이 아니다.
 
 ## 0. 목표 및 연구 질문
