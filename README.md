@@ -6,19 +6,21 @@ Vision 기반 Human-to-Robot 원격조작을 위한 학습형 오차 보정 Reta
 - Robot hand: BrainCo REVO2 Pro (11 DoF, 6 active) — 후속 단계
 - Input: RGB-D 기반 3D human pose (Shoulder / Elbow / Wrist / Hand landmarks)
 
-> 현재 단계: **Stage 1 (Literature & Novelty Audit)**. 실험 결과는 아직 없으며, 문서의 신규성 판단은 모두 가설이다.
+> 현재 진행: **NERO URDF 기반 FK/해석적 IK·ψ feasible arc 시뮬레이션 검증 및 Jetson/RealSense 환경 구축 기록**. Feasible-MAP 성능 비교, occlusion belief 학습, NERO 실기 task 성능은 **아직 미검증**이다.
 
 ## 연구 단계
 
 | Stage | 문서 | 상태 |
 |---|---|---|
 | 1. Literature Review & Novelty Audit | [share/docs/01_literature_novelty_audit.md](share/docs/01_literature_novelty_audit.md) | 초안 |
-| 2. Coordinate & Kinematics Validation | `share/docs/02_kinematics_validation.md` | 예정 |
+| 2. Coordinate & Kinematics Validation | [share/docs/02_kinematics_validation.md](share/docs/02_kinematics_validation.md) | 시뮬레이션 부분 검증, 실기 미검증 |
 | 3. Baseline Failure Analysis | `share/docs/03_baseline_failure_analysis.md` | 예정 |
 | 4. Proposed Solver Development | `share/docs/04_proposed_solver.md` | 예정 |
 | 5. Benchmark & Ablation | `share/docs/05_benchmark_results.md` | 예정 |
 | 6. Real-Robot Validation | `share/docs/06_real_robot_evaluation.md` | 예정 |
 | 7. Publication Assessment | `share/docs/07_publication_assessment.md` | 예정 |
+
+**실행 문서:** [전체 연구 로드맵 V2](share/roadmap.md) · [상세 실험 로드맵 (EX00–EX10)](share/docs/experiment_roadmap.md) · [Jetson 센서 구축 기록](share/11.03_exp/README.md)
 
 ## 현재 주 후보 알고리즘
 
@@ -28,7 +30,7 @@ Vision 기반 Human-to-Robot 원격조작을 위한 학습형 오차 보정 Reta
 
 - 규칙: [CONTRIBUTING.md](CONTRIBUTING.md)
 - 결정 기록: [share/decision.md](share/decision.md) (중요한 결정은 이 파일에만 기록)
-- 로드맵: [share/roadmap.md](share/roadmap.md)
+- 로드맵: [share/roadmap.md](share/roadmap.md) · [실험 계획](share/docs/experiment_roadmap.md)
 
 ## 폴더 구조
 
