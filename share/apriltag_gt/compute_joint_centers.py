@@ -17,6 +17,9 @@ Convention (IMPORTANT, must match how tags were physically mounted):
   (the "- depth * z_axis" term pushes the point from the skin surface inward,
   toward the limb's core/bone, since +z points OUT of the surface toward the camera)
 
+  depth_cm in tag_joint_offsets.yaml is the measured circumference / 2. Treating the
+  limb as a circle, depth = radius = (circumference / 2) / pi.
+
 Usage:
     python3 compute_joint_centers.py --rate 5
 Requires /cam_2/D435i/color/image_raw + camera_info running, and
@@ -97,7 +100,8 @@ class JointCenterEstimator(Node):
         return pose_to_matrix(rvec, tvec)
 
     def joint_point(self, T_cam_tag, along_bone_cm, depth_cm, sign):
-        p_local = np.array([0.0, sign * along_bone_cm / 100.0, -depth_cm / 100.0, 1.0])
+        depth_m = depth_cm / np.pi / 100.0  # half circumference -> radius
+        p_local = np.array([0.0, sign * along_bone_cm / 100.0, -depth_m, 1.0])
         p_cam = T_cam_tag @ p_local
         return p_cam[:3]
 

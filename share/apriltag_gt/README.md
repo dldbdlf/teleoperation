@@ -41,7 +41,8 @@ ros2 run tf2_ros static_transform_publisher -0.47115 0.01617 0.56663 0.00020 0.7
 
 All 4 tags physically mounted on the body (torso/upper-arm/forearm/hand). Tag-to-joint-center
 (S=shoulder, E=elbow, W=wrist) offsets measured by ruler, recorded in `tag_joint_offsets.yaml`
-(along-bone distance + limb-circumference/2 depth estimate per tag, reference pose = arm relaxed
+(along-bone distance + limb circumference/2 per tag, which the script divides by pi to get the
+surface-to-center depth (radius), reference pose = arm relaxed
 at side, see in-file comments for the exact measurement method).
 
 `compute_joint_centers.py`: reads `tag_measurements.yaml` + `tag_joint_offsets.yaml`, detects all
@@ -63,6 +64,15 @@ appearing near the upper arm instead of the wrist in the overlay. Fixed with a p
 re-attaching it - after the fix, elbow cross-check dropped to ~110-130mm, and both `W(T2)`/`W(T3)`
 land near the wrist as expected.
 
-Remaining ~110-130mm elbow disagreement is attributed to ruler measurement precision and tags not
-being perfectly parallel to the bone axis, not an orientation bug - acceptable for this stage but
-worth tightening before trusting it as real quantitative GT (D4 gate).
+Remaining ~110-130mm elbow disagreement was measured with two bugs still in place, fixed on
+2026-11-10 (re-measure the cross-check before drawing conclusions):
+
+- `depth_cm` (circumference/2) was used directly as the surface-to-center depth. The radius is
+  circumference/2pi, so the joint points were pushed ~3x too deep (upper arm 16 cm instead of
+  ~5.1 cm, forearm 14 cm instead of ~4.5 cm). Since T1 and T2 face different directions, that
+  extra ~10 cm of depth lands directly in the elbow disagreement.
+- `tag_measurements.yaml` still had the first print's sizes (7.1/4.8/4.8/3.2 cm) while the
+  mounted tags are the 9/6/6/4 cm reprint, so every tag distance came out ~20% short.
+
+T0 caveat: the torso is not a circle and the shoulder joint is not at the torso's center depth,
+so the chest radius (~16 cm) only roughly approximates the chest-surface-to-shoulder depth.
