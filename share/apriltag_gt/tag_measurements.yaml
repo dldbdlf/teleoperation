@@ -1,0 +1,6 @@
+# measured black-square side length (quiet-zone margin excluded), in cm
+# recorded 2026-11-10
+T0_torso:    { tag_id: 0, size_cm: 7.1 }
+T1_upperarm: { tag_id: 1, size_cm: 4.8 }
+T2_forearm:  { tag_id: 2, size_cm: 4.8 }
+T3_hand:     { tag_id: 3, size_cm: 3.2 }
