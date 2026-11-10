@@ -1,6 +1,5 @@
 # black-square side length (quiet-zone margin excluded), in cm
-# 2026-11-10: tags on the body are the reprint at the recommended nominal sizes.
-# Not yet ruler-confirmed on the printout - replace with measured values once checked.
+# 2026-11-10: tags on the body are the reprint at the recommended sizes, ruler-confirmed on the printout.
 # (first print measured 7.1/4.8/4.8/3.2 cm, likely scaled ~79% by the printer)
 T0_torso:    { tag_id: 0, size_cm: 9.0 }
 T1_upperarm: { tag_id: 1, size_cm: 6.0 }

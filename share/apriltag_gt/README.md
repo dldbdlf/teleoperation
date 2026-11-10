@@ -9,7 +9,7 @@
 | `T2_forearm_id2.png` | 2 | forearm | 6.0 |
 | `T3_hand_id3.png` | 3 | dorsal hand | 4.0 |
 
-Sizes recorded in `tag_measurements.yaml`. **These are the requested/nominal print sizes, not yet ruler-confirmed on the actual printout** - do that before trusting T1-T3 for anything quantitative (see the 2026-11-03 lesson below: printer scaling drift from nominal was part of the original error).
+Sizes recorded in `tag_measurements.yaml`, ruler-confirmed on the reprinted tags (2026-11-10). Re-measure after any reprint: the first print came out at ~79% scale (7.1/4.8/4.8/3.2 cm).
 
 `extrinsic_calib_apriltag.py`: re-does the 2026-11-03 D415<->D435i extrinsic calibration (ArUco-based) using AprilTag instead. Usage:
 
