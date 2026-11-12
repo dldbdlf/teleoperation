@@ -9,10 +9,13 @@ ROS 없이 Python(numpy)만으로 돈다. 결과 해석: [../docs/02_kinematics_
 | `tests/test_kinematics.py` | URDF 체인 FK 대조, IK 왕복·완전성, feasible 구간 안/밖 검사 | 1.1–1.3 |
 | `synthetic_human.py` | EX04/G1용 가짜 사람 궤적 + 관측 + oracle belief 생성 (S1–S6) | P1 / EX04 |
 | `tests/test_synthetic_human.py` | 생성 궤적 기하(팔 길이, ψ 왕복), 가림 마스크, S3/S6 조건, belief calibration | P1 / EX04 |
+| `baselines.py` | EX04 비교군 B0–B8 (공통 IK, ψ 매핑 포함) | P1 / EX04 |
+| `run_baselines.py` | 공통 하네스(100 Hz 제어, 안전 장치)로 B0–B8 실행 + 지표 → `outputs/` | P1 / EX04 |
+| `tests/test_baselines.py` | Jacobian, ψ 매핑, SEW-Mimic 정확 재현, AEAC 수렴·해제, AKC 보정, B7, 하네스 안전 제약 | P1 / EX04 |
 | `assets/nero_description.urdf` | 공식 URDF 사본 (`agilexrobotics/agx_arm_urdf` @ `680fa92`, MIT, `assets/LICENSE.agx_arm_urdf`) | — |
 
 ```bash
-pip install numpy pytest matplotlib
+pip install numpy scipy pytest matplotlib jparse-robotics OneEuroFilter
 cd share/sim
 python -m pytest -q tests
 python analysis_wrist_feasibility.py --n 1000 --grid 180   # 16코어 기준 약 10분
@@ -47,6 +50,35 @@ S4–S6은 `--dropouts`(기본 0.2/0.5/1.0/2.0 s)마다 생성. 같은 (시나�
 **Oracle belief:** belief는 관측으로부터 계산하지 않는다. 오차를 `σ(t) × 단위분산 AR(1) 노이즈`로 뽑고 그 σ(t)를 그대로 보고하므로 공분산이 정의상 맞다 (테스트에서 2σ 안 비율 92–98% 확인). σ는 가려진 시간에 비례해 커진다. EX04의 "oracle Σ" 상한이며 학습된 belief 성능이 아니다.
 
 **가정 (사람 실측 아님):** 움직임은 ready 손목 주변의 느린 사인파 합, ψ 중심은 원 전체 균등(`--psi-centre-deg`로 조정), ψ belief는 단봉(von Mises 1개). 노이즈 크기는 `Noise` 기본값(손목 15 mm, 회전 5°, 팔꿈치 20 mm)이며 D415 실측으로 바꿔야 한다.
+
+## EX04 비교군 (`baselines.py`, `run_baselines.py`)
+
+```bash
+python synthetic_human.py --n-traj 10 --seeds 0 1 --dropouts 0.5 1.0 --psi-centre-deg -30 30 --out outputs/syn_down
+python run_baselines.py outputs/syn_down --psi-map mirror --out outputs/baselines_mirror   # summary.md, per_traj.csv
+```
+
+| ID | 방법 | 출처 | 코드 |
+|---|---|---|---|
+| B0 | 손목 DLS IK + 기본 자세 복귀 | 표준 DLS | 재구현 |
+| B1 | SEW 방향 정렬 (SEW-Mimic) | arXiv 2602.01632 Alg. 1–3 | 재구현 (공식 코드 "심사 후 공개", 제3자 구현은 라이선스 없음) |
+| B2 | 적응형 팔꿈치 오프셋 AEAC + J-PARSE | arXiv 2610.16855 Sec. III | J-PARSE는 공식 `jparse-robotics`(MIT), 나머지 재구현 (공개 저장소는 프로젝트 페이지뿐) |
+| B3 | B0 + One Euro 필터 | Casiez et al. CHI 2012 | `OneEuroFilter`(BSD, 저자 공식) |
+| B4 | B0 + 등속 Kalman | 표준 CV KF | 재구현 |
+| B5 | AKC 팔 길이 보정 + 공통 IK | arXiv 2606.19240 Sec. II-C/D | 재구현 (코드 없음) |
+| B6 | 학습형 ψ (손목 자세 → ψ MLP) + 공통 IK | Biomimetics 11(6):408, Polimi 2019 | 재구현 (코드 없음, 본문 접근 불가라 망 구조는 가정) |
+| B7 | 단봉 불확실성 가중 제약 IK | 로드맵 정의 | 재구현 |
+| B8 | belief MAP 모드 → 일반 제약 IK (순차식) | 로드맵 정의 | 재구현 |
+
+- **공통 조건:** 15 Hz 관측(가려지면 마지막 값 유지), 100 Hz 제어, q0 = READY, 안전 장치(관절 한계, 관절 속도 ≤ π rad/s, 손목 입력이 0.5 s보다 오래되면 정지). 사람 ψ 매핑(`--psi-map`: none/neg/flip/mirror/offset)은 모든 방법의 팔꿈치·ψ 입력에 똑같이 적용.
+- **공통 IK (B5, B6, B8):** 요청 ψ에서 해석적 IK → 불가능하면 2° 격자에서 가장 가까운 가능 ψ → 해 중 현재 q에 가장 가까운 것 → 손목 자체가 불가능하면 정지.
+- **출력 보간:** 프레임마다 목표를 한 번 정하는 방법(B1, B5–B8)은 새 목표까지 카메라 한 주기(약 66 ms) 동안 선형 보간한다 (2610.16855의 출력 보간층과 같은 역할). 15 Hz 계단 입력 때문에 jerk가 부풀려지는 것을 막기 위해서다. `--no-interp`로 끈다.
+- **지표:** 손목 위치·자세 오차(100 Hz, P50/P95), 목표 ψ 가능 비율, 가능 구간 ψ 오차 P90, 불가능 구간 regret(가장 가까운 가능 ψ와의 차이), ψ 점프(0.2 s 안에 60° 넘게 바뀐 횟수), 관절 jerk RMS(100 Hz 관절각의 3차 차분, rad/s³, 이 하네스 안에서만 비교), 정지 비율, 계산 시간 P95.
+- **복귀 지표 (가림 종료 후 1 s):** 안전 장치 전 요청 점프의 최대값(°), 관절 이동 경로 합(°), 속도 제한에 걸린 tick 비율(%). 최대 관절 속도는 대부분 속도 제한값에 붙어서 쓰지 않는다.
+- **알려진 실패 (버그 아님, S1 ψ 한 바퀴):** B2는 사람 ψ가 불가능 구간을 지나면 AEAC가 팔꿈치를 관절 한계로 밀고, 적분 후 clip(논문 식 4) 때문에 손목 우선순위가 깨져 손목 오차가 수백 mm까지 커진다. B7은 국소 최적화라 불가능 구간 반대편으로 넘어가지 못하고 갇힌다(목적함수 값이 반대편 해보다 3배 이상 높은 지역 최소). 둘 다 가능 범위를 모르는 방법의 한계다.
+- **논문에 없어 정한 값**은 `baselines.py` docstring에 `UNTUNED`/`ASSUMPTION`으로 표시했다. 테스트 데이터로 튜닝하지 않았다. 예외로 B2의 k_e는 정지 자세 하나에서 60° 팔꿈치 이동이 약 0.6 s에 수렴하도록 골랐다.
+- **B6 학습 데이터:** 시험 seed와 겹치지 않는 seed 1000의 S4 궤적 60개(정답 손목 자세 → 매핑된 정답 ψ). 가짜 궤적에서는 ψ가 손목 자세와 독립으로 뽑히므로 B6는 사실상 평균 ψ를 배운다. 실제 사람 데이터에서 다시 학습해야 의미가 있다.
+- **B8:** oracle belief가 단봉이라 MAP 모드 = 평균이다. 다봉 belief가 생기면 가장 무거운 모드를 쓴다(`b_psi_modes`).
 
 ## 규약
 
