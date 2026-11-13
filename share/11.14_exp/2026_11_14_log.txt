@@ -1,0 +1,101 @@
+=====================================================================
+2026-11-14 작업 로그
+=====================================================================
+
+---------------------------------------------------------------------
+1. EX04 synthetic_human.py 900개 생성 완료
+---------------------------------------------------------------------
+- 11-13에 수정한 코드(resume 지원 + per-job 예외 처리 + incremental manifest)로
+  재생성, watchdog_ex04.sh가 18:15:12에 manifest.json "complete": true 감지,
+  감시 정상 종료.
+- 결과: 899/900 .npz 생성, failed_jobs 1건
+  {'scenario': 'S6', 'seed': 2, 'index': 14,
+   'error': "setting an array element with a sequence. ... inhomogeneous shape ... (800,)"}
+  (별도 버그, 아직 원인 조사 안 함 — 낮은 우선순위로 보류 중)
+
+---------------------------------------------------------------------
+2. run_baselines.py 성능 버그 발견 및 수정: BLAS 스레드 오버구독
+---------------------------------------------------------------------
+- 증상: B0-B8 894개 trajectory 비교가 체크포인트(20개 단위) 하나도 안 찍힌 채
+  34분+ 경과 -> 너무 느림을 사용자가 지적.
+- 원인: numpy 1.26.4 (OpenBLAS, DYNAMIC_ARCH/NEOVERSEN1, MAX_THREADS=80)가
+  6x7 같은 작은 행렬 연산에도 기본적으로 멀티스레드를 쓰는데, 이미 8-worker
+  multiprocessing.Pool로 트라젝토리 단위 병렬화를 하고 있어서 8코어 Jetson에서
+  심하게 오버구독됨.
+- 진단: 단일 trajectory 타이밍 측정 -> B0 57.6s (원래 1초 미만이어야 함).
+  OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1로 동일 조건 재측정 -> B0 6.15s
+  (약 10배 개선).
+- 수정: run_baselines.py와 synthetic_human.py 맨 위(numpy import 전)에
+  os.environ.setdefault("OPENBLAS_NUM_THREADS", "1") /
+  "OMP_NUM_THREADS" / "MKL_NUM_THREADS" 추가.
+- 수정 후 실제 운영에서도 확인: 체크포인트가 4.4분 만에 20/894 도달 (수정 전엔
+  34분+ 동안 0개).
+
+---------------------------------------------------------------------
+3. run_baselines.py를 중간보고형(progress + incremental checkpoint)으로 재작성
+---------------------------------------------------------------------
+- 사용자 지시: "중간보고하게 바꿔서 돌려봐, 앞으로도 코드짤 때 그렇게 만들어" ->
+  앞으로 오래 걸리는 스크립트는 기본적으로 진행률 로그 + 중간 저장(resume 가능)
+  구조로 작성하는 것으로 합의.
+- 20개 trajectory마다 outputs/baselines*/per_traj.csv를 atomic write(tmp ->
+  replace)로 덮어쓰고, 경과 시간/ETA를 flush=True로 출력.
+
+---------------------------------------------------------------------
+4. B0-B8 baseline 비교 (894 trajectory) 완료 — 결과
+---------------------------------------------------------------------
+psi map: mirror, speed cap pi rad/s, hold 0.5s, output interpolation on.
+전체 시나리오(S1-S6) 평균 경향:
+- 손목 위치/속도 추종 정확도: B3(One Euro), B4(Kalman)가 가장 좋음 (10-18mm) —
+  필터링만 하는 단순 추종이라 당연한 결과.
+- psi(팔꿈치) 정확도: B5(AKC+IK), B7(belief-weighted IK), B8(belief MAP->IK)가
+  B0/B3/B4보다 훨씬 좋음 (예: S1에서 B3/B4 psi 오차 P90 99도인데 B5/B7/B8은
+  18-22도).
+- jerk(부드러움): B3/B4가 가장 낮음(~2000대), B6(learned psi)가 전체적으로
+  가장 나쁨(jerk 2만 이상, psi 오차도 가장 큼).
+- 계산 비용: B0-B4는 1-7ms(P95)로 매우 빠름, B5/B7/B8은 최적화 기반이라
+  100-900ms대 (S3처럼 occlusion이 심한 시나리오에서 특히 느려짐, 900ms 이상도
+  관측됨).
+- 결론: B0-B8끼리의 비교로는 B7/B8이 종합적으로 가장 균형 잡힌 baseline.
+  단, 이건 baseline들끼리 비교일 뿐 — 로드맵 G1이 요구하는 제안 방법 P가 아직
+  없어서 최종 Gate 판정은 못 내리는 상태였음.
+
+---------------------------------------------------------------------
+5. 제안 방법 P (Oracle-Sigma Feasible-MAP) 구현
+---------------------------------------------------------------------
+- 수식 출처 확인: share/docs/01_literature_novelty_audit.md Part D.3.
+  q* = argmin  Mahalanobis(wrist 오차; Sigma_p, Sigma_R)
+             + kappa_psi * (1 - cos(psi(q) - mu_psi))
+             + ||q - q_prev||^2_{W_t}      (W_t: 사후 정밀도의 함수)
+  제약: joint limit / 속도 / 충돌 (Q_t) — 단, 이 harness에서는 모든 baseline이
+  같은 외부 safety shield를 공유하므로 solver 안에 따로 넣지 않아도 공정성은
+  유지됨.
+- 기존 B7(belief-weighted IK)이 이미 오라클 Sigma/kappa_psi를 그대로 쓰고
+  있었음을 확인 (Frame.b_cov, b_kappa, b_psi가 synthetic_human.py의 generate()가
+  주입한 실제 covariance). 따라서 B7과 P의 유일한 실질적 차이는 연속성 가중치
+  W_t: B7은 고정 lam=1, 로드맵의 P는 "불확실할수록 이전 상태 유지"가 되도록
+  posterior 정밀도에 따라 가변.
+- 구현 (share/sim/baselines.py, class FeasibleMAP, B7 SequentialBeliefIK 뒤에
+  추가): B7과 동일한 비용함수에서 연속성 가중치만
+    lam_t = lam0 * max(1, (sigma_pos_현재 / 0.015m)^2)
+  로 변경. 즉 손목 belief의 위치 불확실성이 기준치(생성기 가시 상태 노이즈
+  15mm, B4 Kalman과 동일 가정)보다 커질수록(가림 중/직후) 이전 관절각을 더
+  강하게 유지하고, 확실할 땐 B7과 동일하게 자유롭게 움직임.
+  run_baselines.py의 METHODS/make()에 "P" 등록.
+- 검증 (단일 trajectory, S5_drop2000ms seed0 idx0, 손목 2초 완전 가림 시나리오):
+    B7: recovery_jump_deg 40.85도, jerk_rms 6053
+    P : recovery_jump_deg 12.25도, jerk_rms 5460
+  -> 가림 복귀 시 요청 점프가 40.8도 -> 12.3도로 크게 감소. 의도한 메커니즘
+     (occlusion 복귀 시 불연속 억제)이 실제로 작동함을 확인.
+  (S1/S6처럼 손목이 한 번도 가려지지 않는 시나리오에서는 sigma_pos가 기준치를
+  안 넘어서 lam_t=lam0이 유지되어 P가 B7과 완전히 동일한 결과를 냄 — 설계대로
+  정상.)
+
+---------------------------------------------------------------------
+6. 현재 진행 중
+---------------------------------------------------------------------
+- B0-B8 + P 전체 10개 방법, 894개 trajectory 전부 재실행 시작
+  (outputs/baselines_P/per_traj.csv, summary.md 생성 예정, 로그 ~/run_baselines.log).
+- 아직 완료 전이라 전체 G1 Gate 판정(P가 strongest baseline 대비 wrist 비열화
+  +5mm/+5도 이내이며 psi P90/jerk/recovery 중 하나가 15-20% 개선되는지)은 이
+  로그 작성 시점에는 낼 수 없음. 완료되면 다음 로그에 결과를 기록.
+=====================================================================
