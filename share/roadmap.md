@@ -2,14 +2,15 @@
 
 > 갱신 제안일: 2026-11-04 · **검토용 초안** · W1=2026-11-02 주 · 대상: IROS 2027 / CoRL 2027
 >
-> 기존 연구 방향 유지: 단일 RGB-D(D415) → 사람 팔 관측·불확실성 → NERO 7-DoF Feasible-MAP → 실기, REVO2 Pro 후속 통합. 
+> 기존 연구 방향 유지: 단일 RGB-D(D415) → 사람 팔 관측·불확실성 → NERO 7-DoF Feasible-MAP → 실기, REVO2 Pro 후속 통합.
+> **2026-11-13 요구사항 추가:** 반복 가능한 Canonical reference `q_ref`와 상태 의존적 실행 명령 `q_cmd`를 분리한다. [Solver 설계/R1–R6](docs/04_proposed_solver.md). **아직 미구현·미검증**. 
 > **실시간 추론에는 장갑/마커/2번째 카메라를 사용하지 않는다.** D435i/마커/모션캡처는 학습·평가 시 Ground Truth 취득용으로만 사용 가능하다.
 > **실험별 실행 순서·비교군·데이터·지표·재현성 규격:** [docs/experiment_roadmap.md](docs/experiment_roadmap.md) (EX00–EX10)
 > 일정·Go/No-Go·Contribution 가설은 팀 리뷰 후 [decision.md](decision.md)에 확정 기록한다. 이번 변경은 의사결정 확정이나 실험 성공 주장이 아니다.
 
 ## 0. 목표 및 연구 질문
 
-**연구 질문:** 단일 RGB-D에서 가려진 인간 팔의 동작이 다의적으로 추정될 때, 인간 동작의 *확률적 belief*를 로봇의 실제 실행 가능 영역, 연속성, 안전 제약에 연결하면 고정 가중치·단순 필터·단일자세 IK보다 실제 원격조작이 개선되는가?
+**연구 질문:** 단일 RGB-D에서 가려진 인간 팔의 동작이 다의적으로 추정될 때, 인간 동작의 *확률적 belief*를 로봇의 실제 실행 가능 영역, 연속성, 안전 제약에 연결하면 고정 가중치·단순 필터·단일자세 IK보다 실제 원격조작이 개선되는가? **추가 요구:** 동일한 전체 인간 belief에서는 동일한 canonical 기준 관절각/branch를 선택하면서도 실제 실행은 안전하고 연속적일 수 있는가?
 
 논문 중심은 **새로운 실시간 Retargeting solver**이다. Occlusion-Aware Belief는 핵심 입력·학습 기여, occlusion recovery는 폐루프 제어 효용을 검증하는 부분이다. 단순 RGB-D pose 복원, confidence-weighted IK, 시계열 smoothing, 모듈 연결을 각각 독립적인 주요 신규성이라고 주장하지 않는다.
 
@@ -36,8 +37,17 @@
 1. **Observation:** o_t=(RGB-D S/E/W/hand landmarks, confidence, depth validity, image timestamp, past window), glove-free. RGB-D 상에서 보이지 않는 관절은 배경 깊이를 그대로 관절 깊이로 채택하지 않는다.
 2. **Human belief:** p_φ(T_w, ψ, v | o_1:t). 초기 MVE는 wrist Gaussian / orientation tangent covariance + von Mises(ψ); 명확한 다봉성이 관측될 경우 mixture 또는 particle representation으로 확장. 사람 상완·전완 길이 제약과 일관된 분포, 2D reprojection consistency 검토.
 3. **Robot feasibility:** 공식 NERO URDF에서 ψ feasible arc와 최대 8개 branch, joint limits, qdot/qddot, collision, singularity margin. 손목 pose 자체가 infeasible하면 ψ-only solver로 해결 불가하므로 task-space pose relaxation 포함.
-4. **Control:** posterior 하의 expected task loss + 안전/속도 제약 + short-horizon continuity/recovery를 최적화. 다중 모드에서 평균 자세로 붕괴하거나 branch 점프하지 않도록 explicit hypothesis / temporal hysteresis 검증. 확신 없는 손목 장기 소실은 정지·hold로 종료해야 하며 무한 예측 금지.
+4. **Canonical reference + Control 분리:** posterior 기반 expected task loss, NERO feasible ψ arcs 및 IK branches로 **q_ref를 이전 q와 무관하게 결정적으로 계산**한다(고정 기준 prior, 동점 규칙). 속도·안전·short-horizon continuity, branch hysteresis, occlusion recovery는 **별도 상태 의존적 q_cmd 추적 계층**에서 처리한다. 다중 모드 평균 붕괴 및 무한 wrist 외삽 금지.
 5. **CoRL 확장:** supervised NLL만이 아니라 posterior calibration과 robot-control utility를 연결하는 *차별화된 학습 목적함수* 검증. 예: posterior를 고정한 solver의 rollout loss(ψ deviation, continuity, recovery)와 확률 calibration을 함께 평가/학습. 미분 가능한 constrained layer가 불안정하면 black-box/teacher-distillation 대안. 일반화가 개선되지 않으면 학습 기여로 과장 금지.
+
+### 추가 필수 조건: Repeatable Canonical Mapping (2026-11-13)
+
+- **R-CANON:** 동일한 wrist SE(3) + ψ 분포(모드·불확실성·undefined mask 포함), 동일한 URDF/TF/설정 → 동일한 기준 `q_ref` 및 `branch_id`. 이전 관절각/난수 시드/solver warm start가 기준 결과를 변경해서는 안 됨.
+- **동일 wrist XYZ만으로 동일 q를 강제하지 않음:** 사람의 팔꿈치 의도와 손 방향이 다를 수 있다. 비가역적/위상적 한계 때문에 전 공간의 유일·연속 매핑도 주장하지 않음.
+- **Canonical q_ref ≠ 실제 q_cmd:** 서로 다른 출발 상태에서 현재 속도·충돌·watchdog 제한을 지키려면 q_cmd는 달라도 됨. 안전한 수렴 뒤 종단 관절 구성의 일관성을 평가.
+- **새 검증 R1–R6:** 동일 분포 반복 100회, 서로 다른 접근 경로, 노이즈, 가림/재인식, feasible 경계, 같은 wrist·다른 elbow 사례. EX03/EX04 oracle에서 먼저, EX07 learned belief에서 재검증.
+- **기여 경계:** deterministic home-IK, adaptive elbow weight, mixture→IK, canonicalized weighted IK도 같은 safety shield로 비교한다. 일관성 개선만으로 인간 의도 보존/Task SR을 희생해서는 안 됨.
+- [상세 solver 수식·API·실험/acceptance 기준](docs/04_proposed_solver.md). **설계 가설이며 결과 아님.**
 
 ## 2. 현재 근거/미완료 분리 (2026-11-04)
 
@@ -51,6 +61,7 @@
 - [ ] D415 단독 markerless human 3D pose, 손목 SE(3), ψ 및 visibility/depth validity.
 - [ ] 캘리브레이션 GT 정확도; 기존 ArUco 카메라간 상대변환 z 표준편차 44.7mm는 재검증 필요.
 - [ ] Feasible-MAP solver, learned belief, baselines 및 공정 비교.
+- [ ] Deterministic canonical q_ref/branch, q_ref–q_cmd 분리, R1–R6 반복성·경로 독립성 실험.
 - [ ] 안전 레이어 일원화 후 NERO 실제 폐루프 실험.
 - [ ] 실기 REVO2 Pro 손가락 제어 성능. 팔 Retargeting 메인 claim과 분리.
 
@@ -61,7 +72,7 @@
 | 기간 | 단계·담당 제안 | 작업 | 완료 산출물 |
 |---|---|---|---|
 | **W1–W2 (11/02–11/15)** | P0/기구학 Track B | 단일 D415 입력 확정, D435i는 GT 전용. URDF↔실기 command path/limit 확인, ψ singularity/branch 경계 테스트, 안전 인터페이스, IRB 확인, 관련 문헌 재검증 | hardware_inventory, frame conventions, URDF/unit tests, 분업 리뷰 |
-| **W2–W4 (11/09–11/29)** | P1 Oracle Solver Track B | 가짜 human trajectory+oracle covariance, ψ sweep/arm stretch/J6 infeasible/occlusion/reappearance. SEW, DLS, adaptive weighting, filter vs oracle Feasible-MAP. **G1** | oracle benchmark CSV/figures, runtime, baseline-failure report |
+| **W2–W4 (11/09–11/29)** | P1 Oracle Solver Track B | 가짜 human trajectory+oracle covariance, ψ sweep/arm stretch/J6 infeasible/occlusion/reappearance, **canonical q_ref R1–R6**. SEW, DLS, adaptive weighting, filter vs oracle Feasible-MAP. **G1** | oracle benchmark CSV/figures, runtime, baseline-failure report |
 | **W1–W5 (11/02–12/06) 병렬** | V Vision/GT Track A | Jetson D415 RGB+depth, keypoints→3D, depth validity, torso frame, occlusion flags, timestamps/rosbag. D435i + fiducials **GT 수집 전용**, 독립 정확도 검증 | markerless inference graph, GT calibration audit, synchronized logs |
 | **W4–W7 (11/23–12/20)** | P2 Occlusion Benchmark Track A | 4–6명 파일럿, 6 scenario, occlusion length별, GT-quality mask, subject-held-out splits, real ψ error vs h/visibility, noisefit. **G2a** | benchmark-v1, scripts, E1, dataset card + split manifest |
 | **W6–W10 (12/07–01/10)** | P3 Belief Learning Track A | 기하 filter→unimodal probabilistic→multimodal 필요성 순서로 확장. landmark covariance calibration, NLL+reprojection/temporal, GT uncertainty, unseen-person. **G2b** | posterior model, calibration/reliability plots, ablations |
@@ -87,7 +98,7 @@ Track A: Vision/Data/Learning, Track B: Kinematics/Solver/Robot. 제안 담당�
 
 ### Baselines (같은 입력/안전 제약/재계획 주기)
 
-B0 Wrist IK + posture home; B1 SEW direction retargeting; B2 adaptive elbow offset/weight; B3 IK + One-Euro; B4 IK + Kalman/constant velocity; B5 AKC-style bone-length geometric occlusion correction + common solver; B6 learned residual MLP/GRU 또는 learned ψ; B7 unimodal uncertainty-weighted constrained IK; B8 **mixture-belief → ordinary IK**(순차식); P **proposed belief-constrained Feasible-MAP**. 논문이 공개한 코드가 있으면 재사용, 없으면 재구현 가정 명기.
+B0 Wrist IK + posture home; B1 SEW direction retargeting; B2 adaptive elbow offset/weight; B3 IK + One-Euro; B4 IK + Kalman/constant velocity; B5 AKC-style bone-length geometric occlusion correction + common solver; B6 learned residual MLP/GRU 또는 learned ψ; B7 unimodal uncertainty-weighted constrained IK; B8 **mixture-belief → ordinary IK**(순차식); P **proposed belief-constrained Feasible-MAP**. 논문이 공개한 코드가 있으면 재사용, 없으면 재구현 가정 명기. **동일 canonical tie-break를 적용한 weighted/sequential IK baseline도 추가해 단순 결정성의 효과와 coupled solver 효과를 분리**.
 
 ### 필수 ablations (각각 1개만 달라야 함)
 
@@ -97,6 +108,7 @@ A0 full; A1 no occlusion detection; A2 fixed/uncalibrated Σ; A3 single ψ mode 
 
 - **Perception**: S/E/W 3D position error [mm], wrist orientation [deg], circular ψ MAE/P90 by elbow offset h and occlusion, 68/95% coverage, NLL, ECE, occlusion recall, missed-valid-depth rate.
 - **Solver**: wrist position/orientation target error, robot ψ deviation when human request *feasible*; infeasible에선 best-feasible oracle regret, joint jerk, mode/branch switch count, deadline miss, collision/joint/velocity violations, solver failure, P50/P95/P99 ms.
+- **Repeatability (R1–R6)**: identical-belief q_ref max-norm difference, branch/mode mismatch, cross-path terminal consistency, noise-to-q sensitivity, wrist-only/different-elbow discrimination, q_ref vs q_cmd deviation. 동일 환경 100회 반복 q_ref ≤1e-6 rad 및 mismatch 0은 **신규 제안 pass target**.
 - **Recovery**: max joint jump / peak joint speed during first 1s after reacquisition, delay to stable wrist tracking, false extrapolation during wrist dropout, intervention/hold fraction.
 - **Human task**: per-task/per-user success, completion time (timeout included), safety intervention, number of trials. Compare same tasks/workspace/scales/training time, counterbalanced order, 95% paired confidence intervals, full failures/videos.
 - **Realtime**: D415 input FPS/depth availability, inference p95, robot command p95, full camera-to-actuation p95. Hardware limits rather than nominal ROS timer settings.
@@ -127,7 +139,8 @@ A0 full; A1 no occlusion detection; A2 fixed/uncalibrated Σ; A3 single ψ mode 
 
 - Vision → Belief: `Observation(timestamp, frame_id, S/E/W xyz, hand R, visibility flags, depth-valid flags, confidence, 3D covariance, torso_frame)`
 - Belief → Solver: `HumanBelief(t, wrist_mean_SE3, wrist_cov_SE3, psi_modes={means, concentrations, weights}, occlusion_state, age_ms, calibration_status)`
-- Solver → Safety → Robot: `RobotCommand(q_target, qdot_target?, target_timestamp, confidence, hold_reason)`, command limits independent of learned model.
+- Belief → Canonical Solver: `CanonicalTarget(q_ref[7], psi, branch_id, mode_id, feasible, cost_gap, solver_config_hash)` (이전 q와 독립적인 기준 목표).
+- Canonical Solver → Tracking/Safety → Robot: `RobotCommand(q_cmd[7], qdot_target?, target_timestamp, confidence, hold_reason, safety_override)` (현재 관절 상태 의존). command limits independent of learned model.
 - 모든 모듈은 `base_link`, `camera_color_optical_frame`, `torso`, `shoulder` 좌표계를 정의하고 units [m], [rad], timestamp freshness 명시.
 - D435i가 NERO wrist에 부착되어 움직이는 경우 D415↔D435i transform은 **static TF로 고정하지 않음**. 본 연구 실험에서는 GT 수집을 위해 D435i 고정 배치 권장.
 - 재현성: config+seed+git SHA+dataset manifest+GT quality flags+split+results.json+videos를 실험마다 저장. 원본 사람 영상과 개인식별 정보는 Git에 커밋 금지.
