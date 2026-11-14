@@ -385,16 +385,15 @@ python3 -u run_baselines.py outputs/synthetic --psi-map mirror --out outputs/bas
   - result.txt                                      (본 문서, 저장소 최상위, 신규)
 
 브랜치: feat/ex04-canonical-solver
-로컬 커밋 SHA (최신, result.txt 포함 전): 267dc670c6cb0af12ea543aa549a00d63e83036b
-  (result.txt를 추가하는 새 커밋이 이 바로 다음에 생성됨 — 아래 push 결과와 함께 갱신)
+로컬 커밋 SHA (result.txt 포함, 최신): ab75d0e
 
-Push 상태: 이전 시도(이번 세션 초반) 실패 기록 — 명령 `git push -u origin
-feat/ex04-canonical-solver` 실행 시 다음 오류로 실패함:
+Push 상태: 실패 (재확인함). `git push -u origin feat/ex04-canonical-solver` 실행 시
+이번에도 동일한 오류로 실패:
   "git: 'credential-manager' is not a git command."
   "fatal: could not read Username for 'https://github.com': No such device or address"
 원인: `git config --get credential.helper`가 `manager`를 가리키지만 이 비대화형
-환경에는 해당 자격증명 바이너리가 설치되어 있지 않고, 다른 인증 수단도 설정되어
-있지 않음. 이번 result.txt 커밋을 추가한 뒤 재시도하며, 성공 여부를 아래에 직접
-확인한 결과로 갱신함(추측으로 "성공"이라 적지 않음).
-
-[이 섹션은 커밋/푸시 실행 직후 실제 결과로 즉시 갱신됩니다.]
+환경에는 해당 자격증명 바이너리가 설치되어 있지 않고, 다른 인증 수단(토큰/SSH 키 등)도
+설정되어 있지 않음. 즉, 코드/테스트/분석/본 result.txt는 모두 로컬 브랜치
+feat/ex04-canonical-solver (커밋 ab75d0e)에 정상적으로 존재하지만, 원격(origin)에는
+아직 올라가지 않았음 — "push 성공"이라고 말할 수 없으므로 그렇게 보고하지 않음.
+사용자가 `! gh auth login` 또는 PAT/SSH 키를 설정해주면 재시도 가능.
