@@ -149,22 +149,23 @@ def test_belief_weighted_ik_tracks_a_sharp_belief(m):
 def test_harness_shield_and_all_methods_run(m):
     cfg = sh.Config(duration_s=2.0, occl_start_s=0.8)
     d, meta = sh.generate(m, "S4", 0, 0, 0.5, cfg, sh.reach_bounds(m))
-    tgt, feas, best = rb.targets(m, d, "mirror")
+    tgt, feas, best, q_oracle = rb.targets(m, d, "mirror")
     net = bl.PsiMLP().fit(np.random.default_rng(0).normal(size=(50, 9)), np.zeros(50), epochs=2)
     for mid in rb.METHODS:
-        Q, Qreq, held, rt = rb.run(m, d, rb.make(mid, net), "mirror", np.pi, 0.5)
+        Q, Qreq, held, rt, is_update, invalid, branch_hist = rb.run(m, d, rb.make(mid, net), "mirror", np.pi, 0.5)
         assert np.all(Q >= m.lower - 1e-12) and np.all(Q <= m.upper + 1e-12), mid
         assert np.all(np.abs(np.diff(Q, axis=0)) <= np.pi * 0.01 + 1e-12), mid
-        r = rb.metrics(m, d, Q, Qreq, held, rt, tgt, feas, best, meta, np.pi)
+        r = rb.metrics(m, d, Q, Qreq, held, rt, is_update, invalid, branch_hist, tgt, feas, best, q_oracle, meta, np.pi)
         assert np.isfinite(r["wrist_mm_p50"]), mid
         assert np.isfinite(r["recovery_jump_deg"]) and 0 <= r["recovery_capped_pct"] <= 100, mid
+        assert 0 <= r["solver_fail_pct"] <= 100 and 0 <= r["deadline_miss_pct"] <= 100, mid
 
 
 def test_output_interpolation_spreads_a_frame_step(m):
     cfg = sh.Config(duration_s=1.0, occl_start_s=0.5)
     d, _ = sh.generate(m, "S1", 0, 0, 0.0, cfg, sh.reach_bounds(m))
     meth = rb.make("B8", None)
-    _, req_on, _, _ = rb.run(m, d, meth, "none", np.pi, 0.5, interp=True)
-    _, req_off, _, _ = rb.run(m, d, rb.make("B8", None), "none", np.pi, 0.5, interp=False)
+    _, req_on, _, _, *_ = rb.run(m, d, meth, "none", np.pi, 0.5, interp=True)
+    _, req_off, _, _, *_ = rb.run(m, d, rb.make("B8", None), "none", np.pi, 0.5, interp=False)
     # without interpolation the request is piecewise constant between frames; with it, it ramps
     assert np.abs(np.diff(req_on, axis=0)).max() < np.abs(np.diff(req_off, axis=0)).max()
