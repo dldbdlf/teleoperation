@@ -18,6 +18,8 @@ too old). Methods only return a desired configuration q_des; the shield moves q 
 | B7 | unimodal uncertainty-weighted constrained IK | roadmap definition                  | reimplemented |
 | B8 | belief MAP mode -> ordinary constrained IK (sequential) | roadmap definition       | reimplemented |
 | P  | Oracle-Σ Feasible-MAP (proposed)         | 01_literature_novelty_audit.md Part D.3  | reimplemented |
+| B7c | canonical IK branch choice (home tie-break) + fixed-rate tracking | 04_proposed_solver.md | reimplemented |
+| Pc | canonical IK branch choice + occlusion-adaptive tracking (proposed) | 04_proposed_solver.md | reimplemented |
 
 "Common IK" (B5, B6, B8) = analytic NERO IK at the requested psi; if that psi is infeasible,
 the nearest feasible psi on a 2 deg grid; among solutions the one closest to the current q;
@@ -36,6 +38,8 @@ import numpy as np
 from jparse_robotics import JParseCore
 from OneEuroFilter import OneEuroFilter
 from scipy.optimize import minimize
+
+import canonical as can
 
 import kinematics as k
 from synthetic_human import expm_so3, logm_so3, tool_pose, wrap
@@ -564,3 +568,62 @@ class FeasibleMAP(Method):
         r = minimize(cost, q, method="L-BFGS-B", bounds=list(zip(self.m.lower, self.m.upper)),
                      options={"maxiter": 60})
         self.q_des = r.x
+
+
+# ---------------------------------------------------------------- B7-canonical / P-canonical
+class BeliefCanonicalIK(Method):
+    """B7-canonical (share/docs/04_proposed_solver.md). q_ref = canonical.canonical_feasible_map:
+    nearest feasible psi to the belief mean, branches at that psi tie-broken by distance to the
+    fixed home posture k.READY -- never by q_prev, so q_ref is a pure function of the belief
+    (R-CANON/R1/R2). Tracked to q_cmd with a FIXED-rate execution filter (canonical.track_safe);
+    this isolates "canonicalizing the IK branch choice" from P-canonical's occlusion-adaptive
+    tracking rate (ablation (c): fixed vs adaptive continuity)."""
+    name = "B7-canonical"
+    TAU = 0.05  # UNTUNED: fixed execution time constant
+
+    def reset(self, m, q0):
+        super().reset(m, q0)
+        self.q_track, self.target = q0.copy(), None
+
+    def update(self, f, q):
+        T = tool_pose(self.m, f.b_W, f.b_R)
+        self.target = can.canonical_feasible_map(self.m, T, f.b_psi, k.READY)
+
+    def step(self, q, dt):
+        if self.target is None:
+            return None
+        if self.target.feasible:  # hold rather than chase q_home when the belief itself gives
+            self.q_track = can.track_safe(self.q_track, self.target.q_ref, dt, self.TAU)  # no feasible target (long occlusion noise excursion); see 04_proposed_solver.md Part 1B
+        return self.q_track
+
+
+class FeasibleMAPCanonical(Method):
+    """P-canonical (share/docs/04_proposed_solver.md). Same canonical q_ref as B7-canonical
+    (home-prior branch tie-break, no q_prev anywhere in the reference solver -- Part 1A), but
+    tracked with canonical.track_safe at a time constant that grows with the belief's *current*
+    position uncertainty (Part 1B / TrackSafe), same mechanism and SIGMA0_POS assumption as the
+    original (non-canonical) P's adaptive lam_t: confident frames track q_ref quickly, occluded
+    frames hold near q_prev until visibility returns. The difference from P-old is architectural,
+    not numerical: here the adaptive term lives entirely in the stateful tracking layer, and
+    q_ref itself stays canonical (R-CANON) -- P-old's lam_t instead entered the MAP objective
+    together with q_prev, so its q_des is state-dependent by construction."""
+    name = "P-canonical"
+    TAU0 = 0.05
+    SIGMA0_POS = 0.015
+
+    def reset(self, m, q0):
+        super().reset(m, q0)
+        self.q_track, self.target, self.tau = q0.copy(), None, self.TAU0
+
+    def update(self, f, q):
+        T = tool_pose(self.m, f.b_W, f.b_R)
+        self.target = can.canonical_feasible_map(self.m, T, f.b_psi, k.READY)
+        sp = np.sqrt(f.b_cov[0, 0])
+        self.tau = self.TAU0 * max(1.0, (sp / self.SIGMA0_POS) ** 2)
+
+    def step(self, q, dt):
+        if self.target is None:
+            return None
+        if self.target.feasible:  # hold rather than chase q_home on a transient infeasible belief
+            self.q_track = can.track_safe(self.q_track, self.target.q_ref, dt, self.tau)
+        return self.q_track

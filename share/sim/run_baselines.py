@@ -46,14 +46,15 @@ import baselines as bl
 import kinematics as k
 import synthetic_human as sh
 
-METHODS = ["B0", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "P"]
+METHODS = ["B0", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "P", "B7c", "Pc"]
 _m = _net = None
 
 
 def make(mid, net):
     return {"B0": bl.WristDLS, "B1": bl.SEWMimic, "B2": bl.AEACJParse, "B3": bl.OneEuroDLS,
             "B4": bl.KalmanDLS, "B5": bl.AKC, "B6": lambda: bl.LearnedPsi(net),
-            "B7": bl.BeliefWeightedIK, "B8": bl.SequentialBeliefIK, "P": bl.FeasibleMAP}[mid]()
+            "B7": bl.BeliefWeightedIK, "B8": bl.SequentialBeliefIK, "P": bl.FeasibleMAP,
+            "B7c": bl.BeliefCanonicalIK, "Pc": bl.FeasibleMAPCanonical}[mid]()
 
 
 # ---------------------------------------------------------------- inputs
