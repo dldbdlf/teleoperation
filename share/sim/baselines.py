@@ -1,4 +1,5 @@
-"""EX04 baselines B0-B8 (roadmap.md "Baselines") for the NERO arm, on synthetic_human.py data.
+"""EX04 baselines B0-B8 and proposed method P (roadmap.md "Baselines") for the NERO arm, on
+synthetic_human.py data.
 
 Every method sees the same inputs and runs inside the same harness (run_baselines.py):
 camera frames at 15 Hz (last valid value held while hidden, with its age), a 100 Hz control
@@ -16,6 +17,7 @@ too old). Methods only return a desired configuration q_des; the shield moves q 
 | B6 | learned psi (wrist pose -> psi MLP) + common IK | Biomimetics 11(6):408, Polimi IEEE Access 2019 | reimplemented (no code found) |
 | B7 | unimodal uncertainty-weighted constrained IK | roadmap definition                  | reimplemented |
 | B8 | belief MAP mode -> ordinary constrained IK (sequential) | roadmap definition       | reimplemented |
+| P  | Oracle-Σ Feasible-MAP (proposed)         | 01_literature_novelty_audit.md Part D.3  | reimplemented |
 
 "Common IK" (B5, B6, B8) = analytic NERO IK at the requested psi; if that psi is infeasible,
 the nearest feasible psi on a 2 deg grid; among solutions the one closest to the current q;
@@ -524,3 +526,41 @@ class SequentialBeliefIK(Method):
         qd = common_ik(self.m, f.b_W, f.b_R, psi, q)
         if qd is not None:
             self.q_des = qd
+
+
+# ---------------------------------------------------------------- P: proposed (Oracle-Sigma Feasible-MAP)
+class FeasibleMAP(Method):
+    """P (01_literature_novelty_audit.md Part D.3), Oracle-Sigma variant: same cost as B7
+    (Mahalanobis wrist error + kappa-weighted psi term, within joint limits), but the continuity
+    weight W_t is not a fixed constant — it grows with the belief's *current* position
+    uncertainty, so confident frames move freely toward the belief target while stale/occluded
+    frames hold close to q_prev. This is what D.3 means by "W_t a function of posterior
+    precision" and is the mechanism that is supposed to suppress the discontinuity when
+    visibility returns (the roadmap's "C3 absorbed into the temporal term").
+    UNTUNED: lam0 = 1 (B7's constant, kept as the floor so P never holds *less* than B7 when
+    fully visible); SIGMA0_POS = 15 mm, the generator's visible-wrist position noise (same
+    assumption KalmanDLS/B4 already makes about the generator's noise level)."""
+    name = "P Oracle-Σ Feasible-MAP"
+    per_frame = True
+    SIGMA0_POS = 0.015
+
+    def __init__(self, lam0=1.0):
+        self.lam0 = lam0
+
+    def update(self, f, q):
+        Wi = np.linalg.inv(f.b_cov)
+        mu_psi = f.b_psi
+        kap = f.b_kappa if np.isfinite(mu_psi) else 0.0
+        sp = np.sqrt(f.b_cov[0, 0])
+        lam = self.lam0 * max(1.0, (sp / self.SIGMA0_POS) ** 2)
+
+        def cost(x):
+            e = pose_error(self.m, x, f.b_W, f.b_R)
+            c = 0.5 * e @ Wi @ e + 0.5 * lam * np.sum((x - q) ** 2)
+            p = self.m.psi(x)
+            if kap > 0 and np.isfinite(p):
+                c += kap * (1 - np.cos(p - mu_psi))
+            return c
+        r = minimize(cost, q, method="L-BFGS-B", bounds=list(zip(self.m.lower, self.m.upper)),
+                     options={"maxiter": 60})
+        self.q_des = r.x

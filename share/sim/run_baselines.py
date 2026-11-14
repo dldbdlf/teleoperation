@@ -26,6 +26,12 @@ Writes per_traj.csv, summary.md and config.json under --out (outputs/ is git-ign
 
 from __future__ import annotations
 
+import os
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")  # each Pool worker already parallelizes
+os.environ.setdefault("OMP_NUM_THREADS", "1")        # across trajectories; BLAS threads on top of
+os.environ.setdefault("MKL_NUM_THREADS", "1")        # that just oversubscribe the cores (10x slower
+                                                       # on the 6x7 matrices baselines.py works with)
+
 import argparse
 import csv
 import json
@@ -40,14 +46,14 @@ import baselines as bl
 import kinematics as k
 import synthetic_human as sh
 
-METHODS = ["B0", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8"]
+METHODS = ["B0", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "P"]
 _m = _net = None
 
 
 def make(mid, net):
     return {"B0": bl.WristDLS, "B1": bl.SEWMimic, "B2": bl.AEACJParse, "B3": bl.OneEuroDLS,
             "B4": bl.KalmanDLS, "B5": bl.AKC, "B6": lambda: bl.LearnedPsi(net),
-            "B7": bl.BeliefWeightedIK, "B8": bl.SequentialBeliefIK}[mid]()
+            "B7": bl.BeliefWeightedIK, "B8": bl.SequentialBeliefIK, "P": bl.FeasibleMAP}[mid]()
 
 
 # ---------------------------------------------------------------- inputs
@@ -257,17 +263,33 @@ def main():
                    if not a.groups or Path(f["file"]).parent.name in a.groups)
     net = train_psi_net(cfg, a.psi_map) if "B6" in a.methods else None
     jobs = [(f, a.methods, a.psi_map, a.qd_max, a.hold_s, not a.no_interp) for f in files]
-    print(f"{len(files)} trajectories x {len(a.methods)} methods, psi map '{a.psi_map}'")
-    with Pool(initializer=_init, initargs=(net,)) as pool:
-        rows = [r for rs in pool.imap_unordered(_job, jobs) for r in rs]
-    rows.sort(key=lambda r: (r["group"], r["file"], METHODS.index(r["method"])))
+    print(f"{len(files)} trajectories x {len(a.methods)} methods, psi map '{a.psi_map}'", flush=True)
 
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    with open(out / "per_traj.csv", "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=list(rows[0]))
-        w.writeheader()
-        w.writerows(rows)
+
+    def write_partial_csv(rows):
+        sorted_rows = sorted(rows, key=lambda r: (r["group"], r["file"], METHODS.index(r["method"])))
+        tmp = out / "per_traj.csv.tmp"
+        with open(tmp, "w", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=list(sorted_rows[0]))
+            w.writeheader()
+            w.writerows(sorted_rows)
+        tmp.replace(out / "per_traj.csv")  # atomic: a reader never sees a half-written file
+        return sorted_rows
+
+    rows, t0 = [], time.time()
+    with Pool(initializer=_init, initargs=(net,)) as pool:
+        for i, rs in enumerate(pool.imap_unordered(_job, jobs), 1):
+            rows.extend(rs)
+            if i % 20 == 0 or i == len(jobs):
+                dt = time.time() - t0
+                rate = i / dt
+                eta_s = (len(jobs) - i) / rate if rate > 0 else float("nan")
+                print(f"{i}/{len(jobs)} trajectories ({dt/60:.1f} min elapsed, ETA {eta_s/60:.1f} min)", flush=True)
+                write_partial_csv(rows)
+    rows = write_partial_csv(rows)
+
     names = {mid: make(mid, net).name for mid in a.methods}
     (out / "summary.md").write_text(f"ψ map: {a.psi_map}, speed cap {a.qd_max:.2f} rad/s, hold {a.hold_s} s, "
                                     f"output interpolation {'off' if a.no_interp else 'on'}\n\n"
