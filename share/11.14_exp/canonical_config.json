@@ -1,0 +1,17 @@
+{
+  "args": {
+    "data": "outputs/synthetic",
+    "methods": [
+      "B7c",
+      "Pc"
+    ],
+    "psi_map": "mirror",
+    "qd_max": 3.141592653589793,
+    "hold_s": 0.5,
+    "no_interp": false,
+    "groups": null,
+    "out": "outputs/baselines_canonical"
+  },
+  "data_manifest_sha": "695c1c6178650fa844193e734be00bad5f5bac9f",
+  "git_sha": "c7b6d3a6d4c32c8952f63b11fdae945598e0ef85"
+}

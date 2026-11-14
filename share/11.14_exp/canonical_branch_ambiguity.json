@@ -1,0 +1,83 @@
+{
+  "n_total": 300,
+  "n_tied": 261,
+  "n_infeasible": 11,
+  "tied_pct": 87.0,
+  "by_group": {
+    "S1": {
+      "n": 27,
+      "tied": 25,
+      "infeasible": 0
+    },
+    "S2": {
+      "n": 16,
+      "tied": 14,
+      "infeasible": 1
+    },
+    "S3": {
+      "n": 15,
+      "tied": 7,
+      "infeasible": 8
+    },
+    "S4_drop1000ms": {
+      "n": 20,
+      "tied": 18,
+      "infeasible": 0
+    },
+    "S4_drop2000ms": {
+      "n": 20,
+      "tied": 20,
+      "infeasible": 0
+    },
+    "S4_drop200ms": {
+      "n": 18,
+      "tied": 12,
+      "infeasible": 1
+    },
+    "S4_drop500ms": {
+      "n": 18,
+      "tied": 13,
+      "infeasible": 0
+    },
+    "S5_drop1000ms": {
+      "n": 22,
+      "tied": 20,
+      "infeasible": 1
+    },
+    "S5_drop2000ms": {
+      "n": 19,
+      "tied": 19,
+      "infeasible": 0
+    },
+    "S5_drop200ms": {
+      "n": 20,
+      "tied": 20,
+      "infeasible": 0
+    },
+    "S5_drop500ms": {
+      "n": 18,
+      "tied": 17,
+      "infeasible": 0
+    },
+    "S6_drop1000ms": {
+      "n": 20,
+      "tied": 19,
+      "infeasible": 0
+    },
+    "S6_drop2000ms": {
+      "n": 18,
+      "tied": 17,
+      "infeasible": 0
+    },
+    "S6_drop200ms": {
+      "n": 25,
+      "tied": 21,
+      "infeasible": 0
+    },
+    "S6_drop500ms": {
+      "n": 24,
+      "tied": 19,
+      "infeasible": 0
+    }
+  }
+}
