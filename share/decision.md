@@ -7,3 +7,4 @@
 | 2026-10-29 | 1단계는 NERO 7-DoF 팔 retargeting에 집중하고 REVO2 Pro는 후속 단계에서 통합 | 팔 알고리즘의 개선 효과를 독립적으로 먼저 검증하기 위해 | (확인 필요) |
 | 2026-10-29 | 주 후보는 Feasible-MAP Retargeting (C1, 가칭). C2·C3, residual MLP, learned swivel은 baseline 또는 ablation으로 사용 | [01 문서](docs/01_literature_novelty_audit.md) Part B–C | (확인 필요) |
 | 2026-10-30 | 저장소를 `yuil/`, `headam/` (개인), `share/` (공동)로 나누고, 중요한 결정은 `share/decision.md`에만 기록 | 개인 실험과 공동 결과물을 분리하기 위해 | yuil, (headam 확인 필요) |
+| 2026-11-13 | Feasible-MAP에 **동일한 full human belief → 동일 canonical q_ref/branch** 조건을 신규 요구사항으로 추가하고, 상태 의존적 q_cmd tracking/safety를 분리. R1–R6 실험을 EX03/EX04/EX07에 연동; 성능/팀 합의 확정은 아님 | [04 solver 설계](docs/04_proposed_solver.md), [실험 로드맵](docs/experiment_roadmap.md) | yuil 요청 (headam 공동 검토 필요) |

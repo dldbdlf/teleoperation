@@ -15,7 +15,7 @@ Vision 기반 Human-to-Robot 원격조작을 위한 학습형 오차 보정 Reta
 | 1. Literature Review & Novelty Audit | [share/docs/01_literature_novelty_audit.md](share/docs/01_literature_novelty_audit.md) | 초안 |
 | 2. Coordinate & Kinematics Validation | [share/docs/02_kinematics_validation.md](share/docs/02_kinematics_validation.md) | 시뮬레이션 부분 검증, 실기 미검증 |
 | 3. Baseline Failure Analysis | `share/docs/03_baseline_failure_analysis.md` | 예정 |
-| 4. Proposed Solver Development | `share/docs/04_proposed_solver.md` | 예정 |
+| 4. Proposed Solver Development | [share/docs/04_proposed_solver.md](share/docs/04_proposed_solver.md) | **Canonical mapping 설계 초안 (미구현)** |
 | 5. Benchmark & Ablation | `share/docs/05_benchmark_results.md` | 예정 |
 | 6. Real-Robot Validation | `share/docs/06_real_robot_evaluation.md` | 예정 |
 | 7. Publication Assessment | `share/docs/07_publication_assessment.md` | 예정 |
@@ -25,6 +25,8 @@ Vision 기반 Human-to-Robot 원격조작을 위한 학습형 오차 보정 Reta
 ## 현재 주 후보 알고리즘
 
 **Feasible-MAP Retargeting** (임시 명칭): 단일 시점 vision의 관측별 불확실성을 손목 SE(3)와 swivel angle 공간으로 전파하고, 로봇 실행 가능 집합 위에서 제약 MAP 추정으로 관절각을 구한다. 자세한 내용은 Stage 1 문서 Part C–D 참고.
+
+**2026-11-13 추가 요구사항 — Repeatable Canonical Mapping:** 같은 *전체 human belief*와 고정 URDF·좌표계·캘리브레이션·정책 설정이면 **동일한 기준 관절각 `q_ref`와 IK branch를 결정적으로 출력**해야 한다. 동일 손목 위치만으로 같은 인간 의도를 가정하지 않는다. 실제 명령 `q_cmd`는 현재 관절 상태와 safety 조건에 따라 달라질 수 있으므로 별도 계층에서 생성한다. R1–R6 반복성·경로 독립성·노이즈·가림 검증 계획은 [제안 solver 설계 문서](share/docs/04_proposed_solver.md)를 참고. **구현/성능 검증 전**.
 
 ## 협업
 

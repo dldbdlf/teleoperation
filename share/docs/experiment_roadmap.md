@@ -1,6 +1,6 @@
 # 실험 로드맵 — IROS / CoRL 검증 계획 (Experiment Roadmap V1)
 
-> 작성: 2026-11-04 · **실험 계획 문서, 결과 보고서 아님**
+> 작성: 2026-11-04 · **실험 계획 문서, 결과 보고서 아님** · 2026-11-13 Canonical Mapping 추가
 >
 > 상위 계획: [../roadmap.md](../roadmap.md) · 근거: [02 NERO 기구학](02_kinematics_validation.md) / [2026-11-03 Jetson 실험](../11.03_exp/README.md)
 >
@@ -9,9 +9,12 @@
 
 ## 0. 핵심 질문과 검증 논리
 
+**추가 설계 명세:** [Canonical Feasible-MAP Solver 및 R1–R6 프로토콜](04_proposed_solver.md). 동일한 full human belief에서는 동일 q_ref/branch를 요구하되, 상태 의존적 q_cmd와는 구분한다.
+
 - **H1 (Observation):** self-occlusion, depth invalidity, elbow-extension(팔꿈치 offset h→0)에서 3D/ψ 오차 및 불확실성이 체계적으로 변하는가?
 - **H2 (Belief):** 실제 가림을 반영한 확률적 wrist SE(3) + ψ belief가 단일자세, 기하학적 보정, KF/One-Euro, 단일 von Mises에 비해 calibration과 오류를 개선하는가?
 - **H3 (Retargeting, 주 기여):** 사람의 belief를 그대로 보존한 채 **로봇** feasible set 위에서 조합 최적화하면, 단순 uncertainty-weighted IK 또는 belief→IK 순차식 대비 wrist 오차를 유지하면서 ψ/recovery/jerk/real-task 성능을 개선하는가?
+- **H5 (Canonical Repeatability):** 동일한 full human belief와 동일 URDF/TF/policy에서 이전 q, 입력 순서, random seed에 관계없이 동일한 q_ref/IK branch를 반환하는가? 같은 wrist 좌표지만 서로 다른 elbow ψ 의도는 구별하는가?
 - **H4 (CoRL 추가 기여):** downstream **robot-control utility**를 학습 목표로 사용한 belief가 동일한 모델·데이터 예산의 독립적 NLL 학습보다 새로운 사람·가림 조건에서 로봇 성능을 개선하는가?
 
 **주 Contribution = H3.** H1/H2가 거짓이면 복잡한 모델 도입을 중단하거나 재설계. H4는 CoRL 확장 가설이며 관찰 결과에 따라 주장 여부 판단. Occlusion 복원 자체, confidence weighting, filtering만으로 신규성 주장하지 않음.
@@ -38,11 +41,11 @@ W1 = 2026-11-02. 기존 [상위 로드맵](../roadmap.md)의 W1–W17 일정을 
 | **EX00** | W1–W2 | A+B | 실험 설정/로그 계약 + 재현성/안전 audit | 자료준비 |
 | **EX01** | W1–W3 | A | D415 RGB/Depth alignment + GT rig accuracy | G0 |
 | **EX02** | W1–W5 | A | markerless S/E/W 3D + ψ + occlusion/depth validity | G0→G2a |
-| **EX03** | W1–W3 | B | NERO branch, singularity, ψ arcs, infeasible wrist 검증 | G1 준비 |
-| **EX04** | W2–W4 | B | synthetic oracle occlusion + strong IK baseline vs Feasible-MAP | **G1** |
+| **EX03** | W1–W3 | B | NERO branch, singularity, ψ arcs, infeasible wrist + R1/R2 deterministic fixture | G1 준비 |
+| **EX04** | W2–W4 | B | synthetic oracle occlusion + strong IK baseline vs Feasible-MAP + R1–R6 | **G1 + R-CANON** |
 | **EX05** | W4–W7 | A | 실제 인간 occlusion benchmark, GT mask·held-out split | **G2a** |
 | **EX06** | W6–W10 | A | uncertainty calibration / unimodal↔multimodal belief | **G2b** |
-| **EX07** | W8–W12 | A+B | recorded replay, full coupled solver vs sequential/weighted IK | **G3** |
+| **EX07** | W8–W12 | A+B | recorded replay, coupled solver vs weighted/sequential IK + real belief R1–R6 | **G3** |
 | **EX08** | W10–W14 | B | real NERO safety, latency, tracking dry-run→live | G4 사전조건 |
 | **EX09** | W12–W16 | A+B | 실제 인간 teleop task study, arm→hand 확장 | **G4** |
 | **EX10** | W18+ | A+B | CoRL control-aware learning·unseen user/camera/robot generalization | G5 |
@@ -58,7 +61,8 @@ W1 = 2026-11-02. 기존 [상위 로드맵](../roadmap.md)의 W1–W17 일정을 
 **최소 공통 데이터 계약**
 - Observation: image_timestamp_ns, frame_id, S/E/W [m], hand orientation [SO(3) or quaternion], visibility, depth_validity, landmark confidence, measured/estimated covariance, torso transform, sequence_id, subject_id(익명화).
 - HumanBelief: timestamp, wrist SE(3) mean + tangent-space 6×6 covariance, 원형 ψ distribution (초기 mean/κ, 필요 시 mode/weight), occlusion type, age_ms; 단위/좌표계/undefined-ψ mask 명시.
-- SolverCommand: q_target[7] [rad], optional qdot [rad/s], timestamp, status (TRACK/HOLD/SAFE_STOP), reason. **실기 safety shield는 solver와 독립**.
+- CanonicalTarget: q_ref[7] [rad], canonical_psi, branch_id, mode_id, cost_gap, feasible, solver_config_hash. 동일한 full human belief/고정 robot 설정일 때 항상 동일 target; q_prev 또는 warm-start에 의해 q_ref 변동 금지.
+- SolverCommand: q_cmd[7] [rad], optional qdot [rad/s], timestamp, status (TRACK/HOLD/SAFE_STOP), reason, safety_override. **실제 명령은 현재 로봇 상태 의존적이며 safety shield는 독립**.
 - Dataset manifest: split 기준(피험자·원본 episode), sensor serial/intrinsics, calibration SHA, model/URDF SHA, time synchronization, GT validity, consent status, experiment_code_git_sha.
 - 모든 방법에 동일한 안전/속도/제어 주기/카메라 스트림/훈련 데이터 예산.
 
@@ -100,17 +104,23 @@ W1 = 2026-11-02. 기존 [상위 로드맵](../roadmap.md)의 W1–W17 일정을 
 
 **산출물:** deterministic pytest/regression seeds, 경계 사례 CSV 및 시각화, branch continuity 규약, safety shield spec.
 
+**추가 R1/R2:** 동일 full belief fixture를 N≥100회 반복·프로세스 재시작·호출 순서 역전하며 q_ref/branch 안정성을 기록한다. 서로 다른 초기 q와 접근 경로로 같은 belief에 도달했을 때도 canonical 결과가 같은지 검증한다. 실제 명령 q_cmd의 즉시 일치는 요구하지 않는다.
+
 ### EX04 — Oracle Synthetic Benchmark (G1: 가장 먼저 Contribution 검증)
 
 **목적:** 실제 perception 문제를 배제한 채 solver 수학적 기여부터 평가. 정답 human wrist/ψ와 주입한 noise·covariance를 기록한다.
 
-**시나리오:** S1 ψ sweep(고정 wrist), S2 near-straight elbow, S3 J6/SE(3) infeasibility, S4 elbow-only occlusion, S5 wrist dropout, S6 visibility return + sudden direction reversal. 공간/속도·노이즈·dropout seed를 baseline별 동일하게 고정.
+**시나리오:** S1 ψ sweep(고정 wrist), S2 near-straight elbow, S3 J6/SE(3) infeasibility, S4 elbow-only occlusion, S5 wrist dropout, S6 visibility return + sudden direction reversal.
+
+**추가 EX04-R:** R1 동일분포 100회 결정성, R2 서로 다른 이전 궤적/초기 q에서 동일 canonical target, R3 같은 실제 자세+관측 노이즈 변화, R4 elbow/wrist occlusion 및 재인식, R5 feasible arc·joint limit·singularity 경계, R6 동일 손목 SE(3)지만 다른 elbow ψ belief. 각 실험에 q_ref/q_cmd, branch/mode ID, cost gap, config SHA, safety override를 분리 기록한다. 공간/속도·노이즈·dropout seed를 baseline별 동일하게 고정.
 
 **계획 샘플:** 먼저 장면별 20 trajectories × 3 seeds로 디버그; 기능 안정화 후 장면별 100 trajectories × 5 seeds 목표(계산 용량에 맞춰 수정/사전기록). 0.2, 0.5, 1.0, 2.0s dropout; 실제 카메라 약 15fps를 반영한 observation update, 별도 robot command control rate. 1개 trajectory에 여러 지표가 있지만 독립 샘플로 세는 단위는 trajectory/seed.
 
-**비교군:** B0 wrist DLS IK+posture, B1 SEW direction follow, B2 adaptive elbow gating, B3 B0+One-Euro, B4 B0+Kalman, B7 fixed/unimodal uncertainty-weighted constrained IK, P Oracle-Σ Feasible-MAP. 비교군 모두 동일 safety shield, q0, speed caps, workspace, invalid-input handling. Oracle-Σ는 **잠재 상한**이며 실제 learned-Σ와 성능 비교를 섞어 제안 방법의 실제 성능처럼 주장하지 않는다.
+**비교군:** B0 wrist DLS IK+posture, B1 SEW direction follow, B2 adaptive elbow gating, B3 B0+One-Euro, B4 B0+Kalman, B7 fixed/unimodal uncertainty-weighted constrained IK, P Oracle-Σ Feasible-MAP. **추가 비교:** home-canonical IK, previous-q seeded IK 및 B2/B7의 동일 canonical tie-break 적용 버전. 단순 결정성 효과와 coupled posterior 최적화 효과를 분리. 비교군 모두 동일 safety shield, q0, speed caps, workspace, invalid-input handling. Oracle-Σ는 **잠재 상한**이며 실제 learned-Σ와 성능 비교를 섞어 제안 방법의 실제 성능처럼 주장하지 않는다.
 
 **핵심 지표:** feasible 목표에서는 wrist tracking position/orientation mean/P95와 ψ error P90; infeasible 목표에서는 best-feasible oracle regret와 ψ/wrist tradeoff; 전체 jerk / branch jumps / recovery peak speed / deadline miss / runtime P95.
+
+**R-CANON 제안 기준:** 동일 실행 환경에서 동일 full belief를 N≥100회 넣어 q_ref 최대 관절 차이 ≤1e-6 rad, branch/mode 불일치 0을 목표로 한다(실험 결과 아님). Cross-path는 최종 q_ref 동등성을 보되 q_cmd는 안전한 수렴 후 평가한다. Near-singularity/feasible 경계에서는 global continuity 보장 금지; 실패/hold를 별도 보고.
 
 **Gate G1 사전등록 제안:** strongest fair baseline 대비 wrist 비열화 예시 median +5 mm/+5° 이내이며, ψ P90/jerk/recovery 중 사전 선정한 1차 지표에 실질 개선(초기 목표 15–20%). 안전 위반은 동일 safety shield 하에서 평가. **이 수치는 아직 관측값 아님.** 개선 없으면 belief 모델 훈련 전에 solver 구조와 loss를 수정한다.
 
@@ -149,13 +159,16 @@ W1 = 2026-11-02. 기존 [상위 로드맵](../roadmap.md)의 W1–W17 일정을 
 
 ### EX07 — Coupled Belief-Constrained Solver: 핵심 통합 (G3)
 
+**필수 구조:** learned human belief → 결정적 canonical q_ref/branch 선택(현재 q와 독립) → 상태 의존 q_cmd tracker/safety. 동일 실제 belief 반복 시 q_ref가 달라지면 실패로 처리. 이전 q를 canonical solver의 목적함수나 seed 선택에 주입하지 않는다.
+
 **동일 기록 데이터 입력으로 공정 비교**:
 - B5 AKC-style geometry correction + common IK, B6 residual MLP/GRU 또는 learned ψ, B7 calibrated unimodal confidence-weighted IK, **B8 multimodal belief→ordinary constrained IK (sequential)**, P proposed coupled belief-constrained Feasible-MAP.
 - Human belief posterior p_H(z|o)는 **NERO feasible 여부로 변경하지 않음**. Pose inference accuracy(인간 추정)와 robot optimization outcome(로봇 행동)을 별도 기록.
 - Joint limits·collision·speed/acceleration·input age threshold는 전 비교군 동일. Wrist infeasible에는 task-space pose relaxation 포함하는 조건과 미포함 조건을 구분.
-- Ablation A1 no visibility, A2 fixed Σ, A3 single ψ hypothesis, A4 sequential vs coupled, A5 no temporal/branch tracking, A6 no pose relaxation, A7 no bias learning; **한 번에 하나만 제거**.
+- Ablation A1 no visibility, A2 fixed Σ, A3 single ψ hypothesis, A4 sequential vs coupled, A5 no temporal/branch tracking **(실행 계층에서만)**, A6 no pose relaxation, A7 no bias learning; **한 번에 하나만 제거**.
+- **추가 ablation:** canonical tie-break off, q_prev를 reference solver에 직접 주입, home prior off, deterministic baseline + same safety, mixture-belief→canonical IK, tracker hysteresis off(별도 safety 유지).
 
-**지표:** EX04 oracle와 동일 + 실제 EX05 sequences의 P95 tracking/jerk/branch jumps, stratified per occlusion and near-limit, solver P50/P95/P99, CPU/GPU 사용량. 몇 프레임이 아닌 **episode·subject cluster**로 CI 산출. 5-seed(가림/초기화/샘플) 재현을 목표.
+**지표:** EX04 oracle와 동일 + 실제 EX05 sequences의 P95 tracking/jerk/branch jumps, stratified per occlusion and near-limit, solver P50/P95/P99, CPU/GPU 사용량. **추가 R1–R6 지표:** q_ref max-norm diff, branch/mode mismatch, cross-path target equality, noise-to-q P95, q_ref 대비 q_cmd/실측 관절 수렴 차이. 몇 프레임이 아닌 **episode·subject cluster**로 CI 산출. 5-seed(가림/초기화/샘플) 재현을 목표.
 
 **Gate G3:** strongest B7/B8 대비 단순 smoothing 이상의 이득이 관측되는가? 동일 safety, success/failure 모두 기록. 효과 없으면 학습 규모 증가 전에 목적함수/branch coupling 재설계.
 
@@ -165,7 +178,7 @@ W1 = 2026-11-02. 기존 [상위 로드맵](../roadmap.md)의 W1–W17 일정을 
 
 **필수:** physical E-stop, heartbeat/watchdog, timeout-to-hold/stop, velocity/acceleration caps, workspace limit, collision monitor, timestamp stale detection, ramped reacquisition, robot joint feedback sanity; 한 개의 별도 safety shield에서 강제. 실제 limit 및 pyAgxArm/ros2_control command 주기 측정. REVO2 Pro 통합은 팔이 안정화된 후.
 
-**지표:** color+depth FPS, RGB-D→Pose P95, belief P95, solver P95, command publish P95, **sensor timestamp→actual actuation P95/P99**, watchdog response, wrist tracking FK measured, failed frames/unsafe commands. 50/100 Hz launch 설정을 실제 처리율로 주장하지 않음.
+**지표:** color+depth FPS, RGB-D→Pose P95, belief P95, solver P95, command publish P95, **sensor timestamp→actual actuation P95/P99**, watchdog response, wrist tracking FK measured, failed frames/unsafe commands. canonical q_ref와 실제 q_cmd/q_measured, tracking_status/override, branch_id를 분리 기록하여 동일 목표의 재수렴 평가. 50/100 Hz launch 설정을 실제 처리율로 주장하지 않음.
 
 **Go 조건:** 기록된 시뮬레이션 궤적에서 limit violations 0, emergency stop/timeout 확인, 사람 없이 작업공간 위험요소 제거, 감독자 승인. 임의 prediction 동안 위험한 움직임이 있으면 중단.
 
@@ -177,7 +190,7 @@ W1 = 2026-11-02. 기존 [상위 로드맵](../roadmap.md)의 W1–W17 일정을 
 
 **사전 설계:** 8–12명 pilot→본 실험 표본수는 pilot 효과 크기/분산으로 계산. learned-model train에 포함되지 않은 참가자; 참가자별 3–4 방법, 2+ attempts, 방법/과제 순서 counterbalance, 동일 사전 연습 시간, 무작위화, task success 사전 정의 및 evaluator/영상 기록. 사용자가 10 task를 목표로 하지만 근거 없는 task 확대보다 각 조건의 반복과 paired analysis를 우선한다.
 
-**Primary outcome:** per-task/per-person Task Success Rate(SR), completion time(실패 timeout 포함), 가림 지속시간별 SR/hold fraction. Secondary: wrist/ψ errors, jerk, recovery latency/max joint jump, near-collision, safety intervention rate, preference/effort(선택). SR 도전 목표 +10 percentage points는 **검증되지 않은 희망치**.
+**Primary outcome:** per-task/per-person Task Success Rate(SR), completion time(실패 timeout 포함), 가림 지속시간별 SR/hold fraction. 서로 다른 접근 경로로 동일 human belief에 도달하는 trial을 포함하여 canonical target 재현성과 실기 수렴 후 관절 자세를 별도로 비교. Secondary: wrist/ψ errors, jerk, recovery latency/max joint jump, near-collision, safety intervention rate, preference/effort(선택). SR 도전 목표 +10 percentage points는 **검증되지 않은 희망치**.
 
 **통계:** subject 단위 paired or hierarchical model + 95% CI, trial/episode cluster bootstrap, task-stratified 효과, multiple comparisons 해석. 막대그래프에 단순 frame 수를 독립 n으로 사용 금지. 모든 실패·중단·실제 actuator latency 포함.
 
@@ -193,12 +206,19 @@ W1 = 2026-11-02. 기존 [상위 로드맵](../roadmap.md)의 W1–W17 일정을 
 
 **학습 주장 자격:** 고정 belief + solver와 end-to-end control-aware training의 차이가 통계·학습 효율/일반화로 확인될 때. 부정 결과라면 IROS-style solver 기여 유지, 학습 claim 삭제.
 
+### R-CANON 평가 및 리포팅 원칙 (2026-11-13 추가)
+
+- R1 반복성은 **동일 full posterior + 고정 URDF/TF/모델·정책**을 조건으로 한다. 손목 XYZ가 같아도 ψ 의도가 다르면 다른 q_ref가 올바를 수 있다.
+- R1–R6 결과에 `q_ref`, `q_cmd`, `branch_id`, `mode_id`, `cost_gap`, `safety_override`, `solver_config_hash`, `repeatability_max_norm_rad`을 기록한다.
+- 수치적 결정성, 작은 입력 변화에 대한 강건성, 로봇 실제 종료 관절각 일관성을 **별도 지표**로 보고한다. global 연속성이나 모든 상태에서 즉시 동일 명령은 보장하지 않는다.
+- oracle belief 기반 EX04 성능을 실제 learned belief 성능으로 과장하지 않고, EX07과 EX09로 증분 검증한다.
+
 ## 4. 사전등록 공통 평가 기준
 
 | 그룹 | Primary / secondary measurement | 필수 slice |
 |---|---|---|
 | Vision | 3D S/E/W mm, wrist orientation deg, ψ circular MAE/P90, NLL/coverage | visible vs elbow/wrist occlusion, h bins, camera distance |
-| Retargeting | wrist 3D mm & SO(3) deg, feasible ψ deviation, infeasible oracle regret, jerk/branch jumps | wrist feasible 여부, J6 근접, near-straight |
+| Retargeting | wrist 3D mm & SO(3) deg, feasible ψ deviation, infeasible oracle regret, jerk/branch jumps, **canonical repeatability / cross-path consistency** | wrist feasible 여부, J6 근접, near-straight, near-tie |
 | Recovery | drop length, max |Δq| first second, peak velocity, time-to-stable, false continue, hold fraction | elbow-only vs wrist-loss, 0.2/0.5/1/2s |
 | Real Task | operator success rate, completion time, intervention, end-to-end latency P95/P99 | task, user, method, occlusion severity |
 | Safety | violations & misses, robot physical E-stop response | all methods identical independent shield |
