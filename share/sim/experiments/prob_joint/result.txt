@@ -1,0 +1,147 @@
+=======================================================================
+2026-11-15 NERO 7-DoF — 확률적 관절 분포 / IK branch tracking 탐색 실험
+=======================================================================
+결론: PARTIAL — Branch-Aware Tracking의 이점은 재현되었지만, 확률 분포 추가의
+독립적/일관된 이점은 아직 입증되지 않았다.
+
+[중요: 근거 범위]
+- 이 결과는 GitHub main의 NERO URDF 기하와 해석적 IK 기반으로 수행한
+  새로운 *소규모 통제 합성 실험*이다.
+- 기존 EX04 894 trajectory의 재실행이 아니다. 기존 Jetson의 로컬 P/Pc 구현,
+  실측 D415 영상, learned belief, 충돌 검증을 사용하지 않았다.
+- 여기의 E0~E3를 기존 보고서의 B7/P/Pc 성능이라고 부르면 안 된다.
+- 실행 위치: 이 작업 세션의 CPU Python 환경, Jetson 아님.
+- 소스: share/sim/experiments/prob_joint/{nero_kin.py,run_experiment.py}
+- 기존 루트 result.txt는 변경하지 않았다.
+
+[실험 구성]
+- 모델: AGILEX NERO 7-DoF의 URDF에서 추출한 joint origin/limit 및
+  해당 저장소 share/sim/kinematics.py의 analytic SEW IK.
+- 기초 IK 테스트: 범위 내 난수 관절각 30개 중 30개에서 feasible IK 해 발견.
+  IK -> FK 자세 행렬 최대 노름 오차 3.16e-7 (단위 혼합 행렬 Frobenius norm).
+- 같은 조건의 합성 episode 60개/조건. Episode당 카메라 프레임 72개,
+  합계 4,320 프레임/조건, 약 4.8초/episode.
+- 각 episode의 손목 목표 SE(3)는 고정, 팔꿈치 psi 의도만 시간에 따라 변화.
+  가림은 프레임 24~41 사이(18 frames, 약 1.2초).
+- 가시 psi noise Gaussian sigma 11도, 가림 중 sigma 65도 및 random drift.
+- 매 관측 프레임에 고정된 psi grid(10/15/20도)를 따라 실제 feasible IK
+  다중 branch를 enumerating; 모든 방법에 같은 후보/관측/초기 q/속도제약.
+- 15Hz 관측, 100Hz q_cmd 시뮬레이터, joint speed cap pi rad/s.
+- 고정한 pseudo-random seed: 9131~9190.
+- E0: 단일 canonical MAP IK를 그대로 목표로 추종
+- E1: 동일 canonical q_ref + 현재 q에 대한 고정 continuity penalty로 branch-aware tracking
+- E2: IK 후보들에 대한 categorical joint probability(softmax log likelihood + home prior)
+      와 entropy-adaptive continuity penalty를 적용한 단일 프레임 tracking
+- E3: 관절 후보 상태의 Markov 전이 posterior를 시간적으로 filtering하는 tracking
+- E1/E2/E3 모두 E0와 똑같은 deterministic q_ref를 별도로 계산/보존함.
+  각 episode의 동일 belief 100회 반복 시 q_ref 최대 차이 0 rad.
+  그러나 이 검증은 단일 프로세스/사전 계산된 후보집합에 한정됨.
+
+[핵심 결과: psi grid 15도]
+지표                                E0           E1           E2           E3
+------------------------------------------------------------------------------------
+손목 위치 오차 P95 [mm]            163.53        70.65        69.17       106.64
+팔꿈치 psi 오차 P90 [deg]           39.00        26.22        25.15        31.86
+Jerk RMS                           16849.66     11112.35     11055.25     10506.65
+재관측 직후 요청 목표 점프 [deg]   112.76        60.20        60.26        71.93
+60도 초과 목표 관절 점프 횟수        16.97         4.40         4.27         2.78
+------------------------------------------------------------------------------------
+값은 60개 episode별 metric의 평균; 작은 값이 좋음. '목표 점프'는
+가림 복귀 후 1초 내 연속 목표 관절각 사이의 max-joint angular difference로,
+실제 actuator jump가 아님. 60도 초과 카운트도 물리적 actuator jump가 아님.
+
+[psi grid 변경 민감도 — E1 vs E2]
+grid     E1 wrist P95 / E2        E1 psi P90 / E2     E1 recovery / E2
+10도       66.14 / 58.10 mm        25.08 / 22.74 deg    57.06 / 52.27 deg
+15도       70.65 / 69.17 mm        26.22 / 25.15 deg    60.20 / 60.26 deg
+20도       73.27 / 77.00 mm        24.03 / 24.24 deg    59.81 / 63.87 deg
+
+- E1은 E0 대비 10/15/20도에서 모두 손목/psi 오차, jerk, 복귀 점프 개선.
+- E2의 추가 이득은 grid=10도에서 관측되고 15도에서는 미약하며 20도에선
+  일부 오히려 악화됨. Grid 변화와 알고리즘을 분리하지 않고 성공을 주장할 수 없음.
+- E3는 E1 대비 큰 목표 점프를 줄였지만, 모든 grid에서 손목 P95와
+  psi P90, 복귀 점프가 더 나빠짐. Temporal posterior가 항상 유리하지 않다.
+
+[Paired episode bootstrap 95% CI; resample 60 episodes, 3,000회]
+15도 grid, E1 - E0:
+  wrist P95 difference    -92.88 mm   CI [-121.15, -69.39]
+  psi P90 difference      -12.77 deg  CI [-21.33, -5.32]
+  jerk RMS difference     -5737.31    CI [-6379.97, -5099.49]
+  recovery jump diff      -52.56 deg  CI [-64.35, -41.22]
+  >60deg jump count diff  -12.57      CI [-14.50, -10.72]
+
+15도 grid, E2 - E1:
+  wrist P95 difference     -1.48 mm   CI [-4.80, 1.06]
+  psi P90 difference       -1.07 deg  CI [-2.56, 0.32]
+  jerk RMS difference     -57.09      CI [-272.06, 96.65]
+  recovery jump diff       +0.06 deg  CI [-2.64, 2.81]
+  >60deg jump count diff   -0.13      CI [-0.43, 0.12]
+  => 모든 신뢰구간이 0을 포함, 독립적 E2 개선 미입증.
+
+10도 grid, E2 - E1:
+  wrist P95 difference     -8.04 mm   CI [-12.91, -4.01]
+  psi P90 difference       -2.34 deg  CI [-4.19, -0.58]
+  jerk RMS difference     -664.74     CI [-1024.91, -372.40]
+  recovery jump diff       -4.79 deg  CI [-8.24, -1.83]
+  => 해당 고정 설정 내 유리하지만 다른 grid에서 일관되지 않음.
+
+20도 grid, E2 - E1:
+  wrist P95 difference     +3.73 mm   CI [+0.39, +9.40]
+  jerk RMS difference     +609.89     CI [+376.19, +852.99]
+  recovery jump diff       +4.07 deg  CI [+1.33, +7.64]
+  => 악화.
+
+15도 grid, E3 - E1:
+  wrist P95 difference    +35.99 mm   CI [+22.40, +51.31]
+  psi P90 difference       +5.64 deg  CI [+1.68, +10.04]
+  jerk RMS difference     -605.69     CI [-1163.07, -37.36]
+  recovery jump diff      +11.73 deg  CI [+1.08, +22.91]
+  >60deg jump count diff   -1.62      CI [-2.55, -0.70]
+  => Jerk/큰 점프 횟수와 손목/psi/복귀 성능 간 trade-off.
+
+[중요한 한계/실제 시스템과의 차이]
+1. Tool pose 고정, human psi만 변화: 실제 wrist trajectory, RGB-D, wrist occlusion,
+   깊이 오차, 관측 누락의 정확도와 latency를 대표하지 않음.
+2. 실제 관절 역학, 자기충돌, 물체 충돌, actuator 응답 및 joint acceleration safety 없음.
+   joint velocity cap만 검증.
+3. 조인트 분포는 IK 후보에 대한 heuristic categorical probability. 실제 posterior
+   calibration/NLL/coverage는 측정하지 않았다. GMM 학습도 하지 않았다.
+4. 출력되는 0.x ms 'calc time'은 사전 계산된 IK 후보집합 위의 per-frame
+   posterior/track selection 시간만 나타낸다. 후보 생성, full pipeline,
+   Jetson에서의 실제 runtime은 포함되지 않는다. 이 수치로 E2E 실시간 PASS 금지.
+5. 'IK branch switch'를 직접 추적한 것은 아니며 '60도 초과 목표 관절 점프'는
+   branch instability의 대용 지표일 뿐이다.
+6. 첫 단계 선택/튜닝 및 그리드 해상도 민감도는 탐색적 분석. 본 데이터로 튜닝한 뒤
+   동일 데이터에서 통계적인 우월성을 주장하면 안 된다.
+7. 동일 q_ref 반복 100회 테스트는 같은 프로세스 내에서만 실행됨.
+   전체 R1-R6 canonical 검증을 대체하지 않는다.
+8. 기존 P/Pc 로컬 코드는 GitHub에 없으므로 원본 알고리즘과의 성능 우열은 모름.
+9. 테스트 원본/결과의 모든 에피소드별 행은 실행 시 생성되는 JSON에 남는다.
+   대규모 raw trajectory 데이터는 GitHub에 넣지 않았다.
+
+[재현 명령: main 저장소 기준]
+cd share/sim/experiments/prob_joint
+python3 -m pip install numpy scipy
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  python3 nero_kin.py
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  python3 run_experiment.py --episodes 60 --frames 72 --bank-step 10 --output results_step10.json
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  python3 run_experiment.py --episodes 60 --frames 72 --bank-step 15 --output results_step15.json
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  python3 run_experiment.py --episodes 60 --frames 72 --bank-step 20 --output results_step20.json
+
+[다음 단계 / 판단]
+- 제안 기법을 실전 solver로 채택하지 말 것; 현재 결과는 '가능성 점검'이다.
+- 우선 E1 Branch-Aware Tracking을 Jetson의 실제 로컬 P/Pc 코드에 통합하고,
+  분리된 q_ref의 결정성을 R1-R6 전체에서 다시 확인할 것.
+- 확률의 순수 기여를 확인하려면 E1 vs E2 vs E3와 동일 안전계층, 동일 894개
+  synthetic trajectory, learned/uncalibrated sigma 구분 및 새로운 held-out seed 필요.
+- psi grid resolution/branch transition cost/temporal transition prior ablation 추가.
+- 평가 핵심: wrist error, psi error, joint jump, branch switch, jerk,
+  solver p95/p99(후보생성 포함), joint-limit margin, collision, GT NLL/coverage.
+- 실물 NERO 명령 금지. EX05 실제 D415 기록 데이터로 오프라인 재검증부터 시작.
+
+판정: PARTIAL. 확률적 관절 모드 자체는 구현 가능함을 보였으나
+'확률 추가가 non-probabilistic branch-aware보다 항상 우수'하다는 가설은 기각.
+=======================================================================
