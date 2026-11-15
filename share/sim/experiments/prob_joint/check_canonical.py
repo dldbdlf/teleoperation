@@ -4,7 +4,7 @@ Does not test the unpushed project P/Pc canonical solver.
 """
 import argparse,hashlib,json,subprocess,sys
 import numpy as np
-from nero_kin import Nero, READY
+from nero_kin import Nero, READY, wrap
 from heldout_ablation import make_scenario,canonical_logp
 
 def fingerprint(seed,grid,frames):
@@ -12,7 +12,17 @@ def fingerprint(seed,grid,frames):
     qref=np.asarray([d['bank'][int(np.argmax(canonical_logp(d,t)))] for t in range(frames)])
     rng=np.random.default_rng(seed+918)
     initial_qs=np.array([np.clip(READY+rng.uniform(-.5,.5,7),m.lower,m.upper) for _ in range(20)])
-    assert all(np.array_equal(qref[t],d['bank'][int(np.argmax(canonical_logp(d,t)))]) for t in range(frames) for _ in initial_qs)
+    # Exercise 20 different tracking paths while recomputing the same canonical reference.
+    # q_ref has no q_prev argument; branch-aware q_cmd is allowed to depend on q_prev.
+    for start_q in initial_qs:
+        q_track=start_q.copy()
+        for t in range(frames):
+            logw=canonical_logp(d,t)
+            ref=d['bank'][int(np.argmax(logw))]
+            assert np.array_equal(ref,qref[t])
+            track_score=-logw+.85*np.sum(wrap(d['bank']-q_track)**2,axis=1)
+            q_des=d['bank'][int(np.argmin(track_score))]
+            q_track=np.clip(q_track+np.clip(wrap(q_des-q_track),-.05,.05),m.lower,m.upper)
     return hashlib.sha256(qref.tobytes()).hexdigest()
 
 def main():
