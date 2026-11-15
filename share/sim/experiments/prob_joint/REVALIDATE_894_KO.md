@@ -5,6 +5,21 @@
 
 현재 GitHub \`main\`에는 P/Pc가 없습니다. 2026-11-14 로컬 보고서의 \`feat/ex04-canonical-solver\` 브랜치에만 있다고 기록돼 있으므로 **먼저 Jetson 미푸시 변경을 보존하고 새 스크립트를 병합**해야 합니다. \`git reset --hard\` 금지.
 
+## Jetson 시작 절차 (로컬 데이터 보호)
+```bash
+# 자신의 실제 저장소 경로에서 실행
+cd /path/to/teleoperation
+git status -sb
+git branch --show-current
+git branch backup/jetson-ex04-before-revalidation-20261115
+# 로컬 uncommitted 수정은 먼저 별도 커밋/패치/백업으로 보존.
+# git reset --hard 하지 말고 main과 병합 시 충돌을 검토.
+git fetch origin main
+git merge origin/main
+```
+이미 main에 있다면 fast-forward를 검토. 로컬 미커밋 파일이 있으면
+`git merge`를 실행하기 전에 별도로 보존하고, 합쳐진 내용을 확인하세요.
+
 ## 장비
 - **정확도/관절 오차/branch switching:** 원본 NPZ와 같은 코드/설정이 있으면 워크스테이션에서도 가능. RTX A6000 GPU는 해석적 IK 코드에 필수 아님; CPU 스레드·메모리·버전 고정이 더 중요.
 - **Jetson 지연·15Hz deadline/100Hz 안전 제어:** 최종 대상인 Jetson AGX Orin에서 측정해야 함. \`runtime_p95_ms\`만으로 센서→액추에이터 E2E 지연을 대체할 수 없음.
@@ -47,7 +62,7 @@ python3 -u experiments/prob_joint/run_894_methods.py \
   2>&1 | tee outputs/ex04_prob_894/run_15deg.log
 \`\`\`
 
-원래 Jetson 로컬 \`run_baselines.py\`의 20개 trajectory checkpoint/원자적 CSV 저장/resume 기능을 그대로 사용해야 합니다. 원격 main의 구버전에는 이 기능이 없으니 **로컬 버전을 보존**해야 합니다. 종료 코드 검증 시 \`set -o pipefail\` 권장.
+원래 Jetson 로컬 \`run_baselines.py\`의 20개 trajectory checkpoint/원자적 CSV 저장/resume 기능을 그대로 사용해야 합니다. 현재 main에도 20개 단위 체크포인트 출력이 확인됐습니다. 단, 자동 **resume** 구현 여부는 별도로 확인해야 하며, 없는 상태에서 resume 가능이라고 주장하지 마세요. 종료 코드 검증 시 \`set -o pipefail\` 권장.
 
 ## 3) 결과 집계 / 재현성 감사
 
