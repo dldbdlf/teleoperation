@@ -50,6 +50,10 @@ class ProbJointBranch(bl.Method):
         self.fallback_count = 0
         self.selection_latency_ms = []
         self.bank_latency_ms = []
+        self.entropy_hist = []
+        self.prob_change_hist = []
+        self.candidate_count_hist = []
+        self.prev_top1 = None
 
     def _bank(self, f):
         # Fixed ordering and no q_previous dependence -> deterministic canonical q_ref
@@ -99,21 +103,24 @@ class ProbJointBranch(bl.Method):
         # Immutable, predetermined home prior; no temporal robot state.
         logw = -0.5*(dpsi/sigma)**2 - .055*np.sum((bank-k.READY)**2,axis=1)
         logw -= logsumexp(logw)
+        p = np.exp(logw)
         i_ref = int(np.argmax(logw))
         self.q_ref = bank[i_ref].copy()
         if self.kind == "E0":
             i = i_ref
+            active_p = p
         elif self.kind == "E1":
             score = -logw + .85*np.sum((bank-q)**2,axis=1)
             i = int(np.argmin(score))
+            active_p = p
         elif self.kind == "E2":
-            p = np.exp(logw)
             entropy = -float(np.sum(p*logw))
             score = -logw + (.45+.23*entropy)*np.sum((bank-q)**2,axis=1)
             i = int(np.argmin(score))
+            active_p = p
         else:
             if self.prev_p is None or self.prev_q_bank is None:
-                filtered = np.exp(logw)
+                filtered = p
             else:
                 d2 = np.sum((bank[:,None,:]-self.prev_q_bank[None,:,:])**2,axis=-1)
                 transition = np.exp(-.5*d2/(.60**2))+.0005
@@ -125,5 +132,15 @@ class ProbJointBranch(bl.Method):
             i = int(np.argmin(score))
             self.prev_q_bank = bank.copy()
             self.prev_p = filtered.copy()
+            active_p = filtered
         self.q_des = bank[i].copy()
         self.selection_latency_ms.append(1000*(time.perf_counter()-s))
+        # Branch-posterior diagnostics (section 6): entropy/top-1 mass of the *kind-appropriate*
+        # posterior (E3's temporally-filtered `filtered`, raw `p` otherwise) -- not the selection
+        # score, which also folds in the continuity penalty.
+        top1 = float(active_p.max())
+        self.entropy_hist.append(float(-np.sum(active_p*np.log(np.maximum(active_p, 1e-300)))))
+        if self.prev_top1 is not None:
+            self.prob_change_hist.append(abs(top1-self.prev_top1))
+        self.prev_top1 = top1
+        self.candidate_count_hist.append(len(bank))

@@ -60,6 +60,11 @@ STAGE_PLANS = {
     "stage15": [(m, 15.0) for m in ("B7", "B8", "P", "B7c", "Pc", "E0", "E1", "E2", "E3")],
     "stage10": [(m, 10.0) for m in ("E0", "E1", "E2", "E3")],
     "stage20": [(m, 20.0) for m in ("E0", "E1", "E2", "E3")],
+    # E0-E3 only, all 3 grids -- a supplementary pass (new prob_methods.py diagnostics: cand-gen/
+    # selection timing split, branch entropy, branch-probability change) added after the main
+    # 15198-job "all" run already completed; re-running B7/B8/P/B7c/Pc would gain nothing since
+    # they have no branch-posterior concept and their main-run results already stand.
+    "probdiag": [(m, g) for g in (10.0, 15.0, 20.0) for m in ("E0", "E1", "E2", "E3")],
 }
 
 
@@ -133,6 +138,45 @@ def _winit(queue, psi_map, qd_max, hold_s):
     _W["psi_map"], _W["qd_max"], _W["hold_s"] = psi_map, qd_max, hold_s
 
 
+def prob_diagnostics(meth):
+    """Section 6 extras that only exist for ProbJointBranch (E0-E3) instances: IK-candidate-
+    generation timing and posterior selection timing measured *separately* from the total solver
+    time already in rb.metrics() (runtime_p50/p95/p99_ms, which wraps update()+step() together),
+    plus branch-posterior entropy, frame-to-frame top-1 probability change, and candidate-bank
+    size. B7/B8/P/B7c/Pc instances have none of these attributes, so every key is NaN for them --
+    keeps a single CSV schema across all 9 methods without a separate file."""
+    nan = float("nan")
+    if not hasattr(meth, "entropy_hist"):  # B7/B8/P/B7c/Pc -- no branch-posterior concept at all
+        return dict(cand_gen_p50_ms=nan, cand_gen_p95_ms=nan, cand_gen_p99_ms=nan,
+                     selection_p50_ms=nan, selection_p95_ms=nan, selection_p99_ms=nan,
+                     branch_entropy_p50=nan, branch_entropy_p90=nan,
+                     branch_prob_change_p50=nan, branch_prob_change_p90=nan,
+                     candidate_count_mean=nan, fallback_pct=nan)
+    bank_ms = meth.bank_latency_ms
+    sel_ms = meth.selection_latency_ms
+    ent = meth.entropy_hist
+    dprob = meth.prob_change_hist
+    ncand = meth.candidate_count_hist
+    if not bank_ms:  # every frame fell back before a bank was ever built (fully-occluded file)
+        return dict(cand_gen_p50_ms=nan, cand_gen_p95_ms=nan, cand_gen_p99_ms=nan,
+                     selection_p50_ms=nan, selection_p95_ms=nan, selection_p99_ms=nan,
+                     branch_entropy_p50=nan, branch_entropy_p90=nan,
+                     branch_prob_change_p50=nan, branch_prob_change_p90=nan,
+                     candidate_count_mean=nan, fallback_pct=100.0)
+    return dict(
+        cand_gen_p50_ms=float(np.percentile(bank_ms, 50)), cand_gen_p95_ms=float(np.percentile(bank_ms, 95)),
+        cand_gen_p99_ms=float(np.percentile(bank_ms, 99)),
+        selection_p50_ms=float(np.percentile(sel_ms, 50)) if sel_ms else nan,
+        selection_p95_ms=float(np.percentile(sel_ms, 95)) if sel_ms else nan,
+        selection_p99_ms=float(np.percentile(sel_ms, 99)) if sel_ms else nan,
+        branch_entropy_p50=float(np.percentile(ent, 50)) if ent else nan,
+        branch_entropy_p90=float(np.percentile(ent, 90)) if ent else nan,
+        branch_prob_change_p50=float(np.percentile(dprob, 50)) if dprob else nan,
+        branch_prob_change_p90=float(np.percentile(dprob, 90)) if dprob else nan,
+        candidate_count_mean=float(np.mean(ncand)) if ncand else nan,
+        fallback_pct=100.0 * meth.fallback_count / max(1, len(bank_ms) + meth.fallback_count))
+
+
 def _run_one(file_path, scenario, method, grid, config_hash, code_version, tgt, feas, best, q_oracle, meta_json):
     m, psi_map, qd_max, hold_s = _W["m"], _W["psi_map"], _W["qd_max"], _W["hold_s"]
     t0 = time.perf_counter()
@@ -142,7 +186,8 @@ def _run_one(file_path, scenario, method, grid, config_hash, code_version, tgt, 
         Q, Qreq, held, rt, is_update, invalid, branch_hist = rb.run(m, d, meth, psi_map, qd_max, hold_s)
         row = {"group": scenario, "file": Path(file_path).name, "method": method, "grid": grid_key(method, grid),
                **rb.metrics(m, d, Q, Qreq, held, rt, is_update, invalid, branch_hist,
-                            tgt, feas, best, q_oracle, json.loads(meta_json), qd_max)}
+                            tgt, feas, best, q_oracle, json.loads(meta_json), qd_max),
+               **prob_diagnostics(meth)}
         dt = time.perf_counter() - t0
         key = (file_path, method, grid_key(method, grid), config_hash, code_version)
         _W["q"].put(("done", key, row, dt))
