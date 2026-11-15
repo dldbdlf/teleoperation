@@ -31,6 +31,31 @@ EX04 Solver 재현성 및 추가 정량 평가 — 최종 결과 보고서 (resu
 - 전체 실행 로그: ~/run_baselines_full2.log (894/894 완료, 총 소요 290.5분)
 - 원본 데이터: share/sim/outputs/baselines_full2/{per_traj.csv, summary.md, config.json}
 
+전체 로그 및 데이터 위치 (모두 이 저장소/머신 기준 경로):
+
+  [원시 실행 로그 — raw log]
+  - ~/run_baselines_full2.log
+      12개 방법 × 894개 trajectory 전체 실행의 원시 콘솔 로그. 20개 trajectory마다
+      진행률/경과시간/ETA가 기록됨 (예: "894/894 trajectories (290.5 min elapsed,
+      ETA 0.0 min)"). 본 result.txt의 §2-§7 수치가 나온 실행 그 자체의 로그.
+
+  [이번 실행의 결과 데이터 — share/sim/outputs/]
+  - share/sim/outputs/baselines_full2/per_traj.csv   전체 10,729행 원본 trajectory별 지표
+  - share/sim/outputs/baselines_full2/summary.md     시나리오별(S1-S6×dropout) 집계 표
+  - share/sim/outputs/baselines_full2/config.json    git_sha/data_manifest_sha/실행 인자 기록
+
+  [재현성 비교에 쓴 과거(부분) 실행 로그/데이터]
+  - share/sim/outputs/baselines_P/          B0-B8, P만 실행한 이전 결과 (§2 재현성 검증 기준)
+  - share/sim/outputs/baselines_canonical/  B7c, Pc만 실행한 이전 결과 (§2 재현성 검증 기준)
+
+  [그 외 실험 서술/보조 로그 — share/11.14_exp/]
+  - share/11.14_exp/2026-11-14_log.txt                      2026-11-14 작업 일지
+  - share/11.14_exp/EX04_joint_consistency_results.md       canonical solver 1차 보고서(이전 세션)
+  - share/11.14_exp/canonical_summary.csv / .md             canonical 1차 보고서용 집계
+  - share/11.14_exp/canonical_branch_ambiguity.json         분기 중의성 샘플링 결과
+  - share/11.14_exp/canonical_config.json                   위 1차 실행의 config
+  - share/11.14_exp/r3_noise_summary.csv                    R3 노이즈 민감도 결과 (§4 R3 근거)
+
 
 --------------------------------------------------------------------------------
 2. 기존 894개 실험 재현 결과 (Experiment A)
