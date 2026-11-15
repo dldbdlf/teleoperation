@@ -170,7 +170,7 @@ def main():
         sample=[r for r in rows if r['method']==method]
         summ[method]={k:round(float(np.mean([r[k] for r in sample if r[k] is not None])),4) for k in keys}
     result={'type':'EXPLORATORY_NERO_FIXED_WRIST_SYNTHETIC','not_reproduction_of_894':True,
-            'notes':['Fixed tool pose per episode: tests branch handling, not full motion/vision','Analytic IK geometry from NERO URDF; bank is finite 20-degree psi grid','Probabilities are heuristic uncalibrated posterior over candidate IK states','Jetson latency cannot be inferred from this container CPU','E0-E3 are experimental controls, NOT the user local unreleased P/Pc versions'],
+            'notes':['Fixed tool pose per episode: tests branch handling, not full motion/vision','Analytic IK geometry from NERO URDF; finite psi grid specified via --bank-step','Probabilities are heuristic uncalibrated posterior over candidate IK states','Jetson latency cannot be inferred from this container CPU','E0-E3 are experimental controls, NOT the user local unreleased P/Pc versions'],
             'settings':{'episodes':args.episodes,'frames_per_episode':args.frames,'psi_bank_step_deg':args.bank_step,'camera_hz':15,'command_hz_nominal':100,'qdot_max_rad_s':float(PI),'noise_visible_psi_deg':11,'noise_occluded_psi_deg':65},
             'canonical_repeated_100x_max_abs_rad':float(max(repeat)),'summary':summ,'per_episode':rows,
             'wall_s':round(time.perf_counter()-tstart,2)}
