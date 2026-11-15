@@ -1,7 +1,7 @@
 # 2026-11-14 — Claude Code 실행 프롬프트: EX04 관절각 재현성·개선 실험
 
 > **이 문서는 실행 지시용 프롬프트이며 실험 결과가 아니다.** 작성일: 2026-11-14 (KST)
-> 관련 기록: [2026-11-14 로그](2026_11_14_log.txt) · [Canonical Solver 요구사항](../docs/04_proposed_solver.md) · [EX00–EX10 계획](../docs/experiment_roadmap.md)
+> 관련 기록: [2026-11-14 로그](2026-11-14_log.txt) · [Canonical Solver 요구사항](../docs/04_proposed_solver.md) · [EX00–EX10 계획](../docs/experiment_roadmap.md)
 > 대상: Jetson AGX Orin의 기존 `~/teleoperation_repo` 로컬 작업 환경. 실기 NERO 명령 금지, **시뮬레이션/오프라인 평가만 수행**.
 
 ## Claude Code에 그대로 붙여 넣을 프롬프트

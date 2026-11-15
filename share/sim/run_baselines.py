@@ -26,6 +26,12 @@ Writes per_traj.csv, summary.md and config.json under --out (outputs/ is git-ign
 
 from __future__ import annotations
 
+import os
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")  # each Pool worker already parallelizes
+os.environ.setdefault("OMP_NUM_THREADS", "1")        # across trajectories; BLAS threads on top of
+os.environ.setdefault("MKL_NUM_THREADS", "1")        # that just oversubscribe the cores (10x slower
+                                                       # on the 6x7 matrices baselines.py works with)
+
 import argparse
 import csv
 import json
@@ -37,17 +43,23 @@ from pathlib import Path
 import numpy as np
 
 import baselines as bl
+import canonical as can
 import kinematics as k
 import synthetic_human as sh
 
-METHODS = ["B0", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8"]
+DEADLINE_S = 1 / 15  # observation rate; a camera-frame update() that takes longer than this
+                      # has used up its whole inter-frame budget before the next frame arrives
+WRIST_OK_MM = 30.0    # "recovered" threshold for recovery_time_s -- ASSUMPTION, see metrics() docstring
+
+METHODS = ["B0", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "P", "B7c", "Pc"]
 _m = _net = None
 
 
 def make(mid, net):
     return {"B0": bl.WristDLS, "B1": bl.SEWMimic, "B2": bl.AEACJParse, "B3": bl.OneEuroDLS,
             "B4": bl.KalmanDLS, "B5": bl.AKC, "B6": lambda: bl.LearnedPsi(net),
-            "B7": bl.BeliefWeightedIK, "B8": bl.SequentialBeliefIK}[mid]()
+            "B7": bl.BeliefWeightedIK, "B8": bl.SequentialBeliefIK, "P": bl.FeasibleMAP,
+            "B7c": bl.BeliefCanonicalIK, "Pc": bl.FeasibleMAPCanonical}[mid]()
 
 
 # ---------------------------------------------------------------- inputs
@@ -91,23 +103,32 @@ def train_psi_net(cfg, kind, n_traj=60, seed0=1000):
 
 # ---------------------------------------------------------------- evaluation targets (shared by methods)
 def targets(m, d, kind):
+    """tgt/feas/best as before, plus q_oracle: the canonical (home-tie-break, no q_prev -- see
+    canonical.py) joint configuration at the GT wrist pose and the mapped GT psi, one per camera
+    frame where that psi is feasible for that pose (nan rows elsewhere). Computed once per
+    trajectory here, independent of which method is later scored against it, for the
+    joint-angle-deviation-vs-oracle metric: it answers "how far is this method's q from *a*
+    feasible configuration that matches the human's wrist+elbow intent exactly", not "the"
+    unique GT joint angles -- NERO's redundancy means there may be other equally valid ones."""
     pm = bl.PsiMap(kind)
     first = np.flatnonzero(d["obs_elbow_visible"])
     if len(first):  # offset map anchors on the first observed (noisy) psi, as the methods do
         pm.psi(float(d["obs_psi"][first[0]]))
     tgt = np.array([pm.psi(p) for p in d["cam_gt_psi"]])
     feas, best = np.zeros(len(tgt), bool), np.full(len(tgt), np.nan)
+    q_oracle = np.full((len(tgt), 7), np.nan)
     for i, (T, p) in enumerate(zip(d["cam_gt_T"], tgt)):
         if not d["cam_gt_psi_defined"][i]:
             continue
         if m.ik_feasible(T, p):
             feas[i], best[i] = True, p
+            q_oracle[i] = can.canonical_feasible_map(m, T, float(p), k.READY).q_ref
             continue
         for s in bl.PSI_GRID[np.argsort(np.abs(k.wrap(bl.PSI_GRID - p)))]:
             if m.ik_feasible(T, s):
                 best[i] = s
                 break
-    return tgt, feas, best
+    return tgt, feas, best, q_oracle
 
 
 # ---------------------------------------------------------------- one run
@@ -125,14 +146,19 @@ def run(m, d, method, pmap_kind, qd_max, hold_s, interp=True):
     method.reset(m, q)
     n_t = len(t_ctrl)
     Q, Qreq, held, rt, j_last = np.empty((n_t, 7)), np.empty((n_t, 7)), np.zeros(n_t, bool), [], -1
+    is_update, invalid, branch_hist = np.zeros(n_t, bool), np.zeros(n_t, bool), []
     seg = None  # (q_from, q_to, t_start) for per-frame interpolation
     for n, t in enumerate(t_ctrl):
         t0 = time.perf_counter()
         j = int(np.searchsorted(cam_t, t + 1e-9) - 1)
         if j > j_last:
             j_last = j
+            is_update[n] = True
             prev = method.q_des
             method.update(fr[j], q)
+            bid = getattr(getattr(method, "target", None), "branch_id", None)  # canonical methods only
+            if bid is not None:
+                branch_hist.append(bid)
             if method.per_frame and method.q_des is not None and method.q_des is not prev:
                 start = q if seg is None else seg[0] + (seg[1] - seg[0]) * min(1.0, (t - seg[2]) / T_cam)
                 seg = (start, method.q_des.copy(), t)
@@ -141,16 +167,38 @@ def run(m, d, method, pmap_kind, qd_max, hold_s, interp=True):
         if method.per_frame and interp and seg is not None and q_des is not None:
             q_des = seg[0] + (seg[1] - seg[0]) * min(1.0, (t - seg[2]) / T_cam)
         age = fr[j].wrist_age + (t - fr[j].t)
-        if q_des is None or not np.all(np.isfinite(q_des)) or not np.isfinite(fr[j].W).all() or age > hold_s:
+        had_input = np.isfinite(fr[j].W).all()
+        raw_invalid = q_des is None or not np.all(np.isfinite(q_des))
+        invalid[n] = raw_invalid and had_input  # "solver had a target but still failed", not startup/occlusion
+        if raw_invalid or not had_input or age > hold_s:
             q_des, held[n] = q, True
         Qreq[n] = q_des
         step = np.clip(q_des - q, -qd_max * dt, qd_max * dt)
         q = np.clip(q + step, m.lower, m.upper)
         Q[n] = q
-    return Q, Qreq, held, np.array(rt)
+    return Q, Qreq, held, np.array(rt), is_update, invalid, branch_hist
 
 
-def metrics(m, d, Q, Qreq, held, rt, tgt, feas, best, meta, qd_max):
+def metrics(m, d, Q, Qreq, held, rt, is_update, invalid, branch_hist, tgt, feas, best, q_oracle, meta, qd_max):
+    """New fields added for the 2026-11-14 second-pass prompt (result.txt), on top of the
+    original set:
+      psi_p50/p95 (psi_p90 already existed); joint_jump_max_deg (largest single-tick |Δq| over
+      the whole trajectory, vs. recovery_jump_deg which is scoped to the 1s post-occlusion
+      window); qd_/qdd_ RMS+P95 (joint velocity/acceleration, deg/s and deg/s^2); jerk_p95
+      (jerk_rms already existed); joint_limit_margin_min_deg (worst-case distance to a joint
+      limit, any joint/tick); branch_switch_count_exact (canonical methods only, nan otherwise:
+      exact count of target.branch_id changes between consecutive camera frames) and
+      branch_switch_proxy (all methods: ticks with any single-joint |Δq|>90deg in one 100Hz
+      control step -- a generic stand-in for "IK branch flip" since only the canonical methods
+      expose a real branch id); recovery_time_s (first time after the occlusion window ends that
+      wrist position error drops under WRIST_OK_MM=30mm and stays there for >=0.2s; nan if it
+      never does, or if the trajectory has no occlusion window); runtime_p50/p99_ms (p95 already
+      existed); deadline_miss_pct (fraction of camera-frame update() calls slower than
+      DEADLINE_S=1/15s, i.e. the next frame would already be waiting); solver_fail_pct (fraction
+      of ticks where fr[j].W was available but the method still returned no usable q_des --
+      narrower than held_pct, which also counts stale-input/occlusion holds); joint_dev_deg_p50/
+      p90 (vs. q_oracle from targets(), only at camera frames where the mapped GT psi is
+      feasible for that pose -- see targets()'s docstring on why this isn't "the" unique answer)."""
     t, dt = d["gt_t"], float(d["gt_t"][1] - d["gt_t"][0])
     pose = [bl.wrist_pose(m, q) for q in Q]
     G = [T @ np.linalg.inv(m.M) for T in d["gt_T"]]
@@ -167,8 +215,13 @@ def metrics(m, d, Q, Qreq, held, rt, tgt, feas, best, meta, qd_max):
     over = dpsi > 60
     jumps = int(np.sum(over[1:] & ~over[:-1]) + over[0]) if len(over) else 0
     jerk = np.diff(Q, 3, axis=0) / dt ** 3
-    qd = np.abs(np.diff(Q, axis=0)) / dt
-    rec = dict(recovery_jump_deg=np.nan, recovery_path_deg=np.nan, recovery_capped_pct=np.nan)
+    qd_signed = np.diff(Q, axis=0) / dt
+    qd = np.abs(qd_signed)
+    qdd = np.abs(np.diff(Q, 2, axis=0) / dt ** 2)
+    joint_jump_max_deg = float(np.rad2deg(np.abs(np.diff(Q, axis=0)).max()))
+    margin = np.minimum(Q - m.lower, m.upper - Q)
+    rec = dict(recovery_jump_deg=np.nan, recovery_path_deg=np.nan, recovery_capped_pct=np.nan,
+               recovery_time_s=np.nan)
     win = meta.get("hidden_window_s")
     if win and np.searchsorted(t, win[1]) < len(qd):  # first 1 s after the occlusion ends
         a = np.searchsorted(t, win[1])
@@ -176,15 +229,38 @@ def metrics(m, d, Q, Qreq, held, rt, tgt, feas, best, meta, qd_max):
         req = np.abs(Qreq[a:b] - np.r_[Q[a - 1:a], Q[a:b - 1]])  # request vs q at that tick, before the shield
         rec = dict(recovery_jump_deg=float(np.rad2deg(req.max())),
                    recovery_path_deg=float(np.rad2deg(qd[a:b].sum() * dt)),
-                   recovery_capped_pct=float(100 * np.mean(qd[a:b].max(1) >= 0.999 * qd_max)))
+                   recovery_capped_pct=float(100 * np.mean(qd[a:b].max(1) >= 0.999 * qd_max)),
+                   recovery_time_s=np.nan)
+        ok = e_pos[a:] < WRIST_OK_MM
+        hold_ticks = max(1, int(round(0.2 / dt)))
+        stable = np.convolve(ok, np.ones(hold_ticks, dtype=int), mode="valid") == hold_ticks
+        if stable.any():
+            rec["recovery_time_s"] = float(t[a + int(np.argmax(stable))] - win[1])
+    bswitch_exact = float(sum(1 for x, y in zip(branch_hist[:-1], branch_hist[1:]) if x != y)) if branch_hist else np.nan
+    bswitch_proxy = int(np.sum(np.any(np.abs(np.diff(Q, axis=0)) > np.deg2rad(90), axis=1)))
+    oracle_sel = feas & np.isfinite(q_oracle).all(axis=1)
+    dev = np.rad2deg(np.max(np.abs(k.wrap(Q[idx[oracle_sel]] - q_oracle[oracle_sel])), axis=1)) if oracle_sel.any() else np.array([])
     return dict(
         wrist_mm_p50=np.median(e_pos), wrist_mm_p95=np.percentile(e_pos, 95),
         wrist_deg_p50=np.median(e_rot), wrist_deg_p95=np.percentile(e_rot, 95),
         psi_feasible_pct=100 * feas.mean(),
+        psi_p50=np.percentile(err[feas], 50) if feas.any() else np.nan,
         psi_p90=np.percentile(err[feas], 90) if feas.any() else np.nan,
+        psi_p95=np.percentile(err[feas], 95) if feas.any() else np.nan,
         regret_p50=np.median(regret) if len(regret) else np.nan,
-        psi_jumps=jumps, jerk_rms=float(np.sqrt(np.mean(jerk ** 2))),
-        **rec, held_pct=100 * held.mean(), runtime_p95_ms=1000 * np.percentile(rt, 95))
+        psi_jumps=jumps, jerk_rms=float(np.sqrt(np.mean(jerk ** 2))), jerk_p95=float(np.percentile(np.abs(jerk), 95)),
+        joint_jump_max_deg=joint_jump_max_deg,
+        qd_rms_deg_s=float(np.rad2deg(np.sqrt(np.mean(qd_signed ** 2)))), qd_p95_deg_s=float(np.rad2deg(np.percentile(qd, 95))),
+        qdd_rms_deg_s2=float(np.rad2deg(np.sqrt(np.mean(qdd ** 2)))), qdd_p95_deg_s2=float(np.rad2deg(np.percentile(qdd, 95))),
+        joint_limit_margin_min_deg=float(np.rad2deg(margin.min())),
+        branch_switch_count_exact=bswitch_exact, branch_switch_proxy=bswitch_proxy,
+        joint_dev_deg_p50=float(np.percentile(dev, 50)) if len(dev) else np.nan,
+        joint_dev_deg_p90=float(np.percentile(dev, 90)) if len(dev) else np.nan,
+        **rec, held_pct=100 * held.mean(),
+        solver_fail_pct=100 * invalid.mean(),
+        deadline_miss_pct=100 * np.mean(rt[is_update] > DEADLINE_S) if is_update.any() else np.nan,
+        runtime_p50_ms=1000 * np.percentile(rt, 50), runtime_p95_ms=1000 * np.percentile(rt, 95),
+        runtime_p99_ms=1000 * np.percentile(rt, 99))
 
 
 # ---------------------------------------------------------------- pool
@@ -197,13 +273,14 @@ def _job(args):
     path, mids, kind, qd_max, hold_s, interp = args
     d = np.load(path)
     meta = json.loads(str(d["meta"]))
-    tgt, feas, best = targets(_m, d, kind)
+    tgt, feas, best, q_oracle = targets(_m, d, kind)
     rows = []
     for mid in mids:
-        Q, Qreq, held, rt = run(_m, d, make(mid, _net), kind, qd_max, hold_s, interp)
+        Q, Qreq, held, rt, is_update, invalid, branch_hist = run(_m, d, make(mid, _net), kind, qd_max, hold_s, interp)
         group = Path(path).parent.name
         rows.append({"group": group, "file": Path(path).name, "method": mid,
-                     **metrics(_m, d, Q, Qreq, held, rt, tgt, feas, best, meta, qd_max)})
+                     **metrics(_m, d, Q, Qreq, held, rt, is_update, invalid, branch_hist,
+                               tgt, feas, best, q_oracle, meta, qd_max)})
     return rows
 
 
@@ -257,17 +334,33 @@ def main():
                    if not a.groups or Path(f["file"]).parent.name in a.groups)
     net = train_psi_net(cfg, a.psi_map) if "B6" in a.methods else None
     jobs = [(f, a.methods, a.psi_map, a.qd_max, a.hold_s, not a.no_interp) for f in files]
-    print(f"{len(files)} trajectories x {len(a.methods)} methods, psi map '{a.psi_map}'")
-    with Pool(initializer=_init, initargs=(net,)) as pool:
-        rows = [r for rs in pool.imap_unordered(_job, jobs) for r in rs]
-    rows.sort(key=lambda r: (r["group"], r["file"], METHODS.index(r["method"])))
+    print(f"{len(files)} trajectories x {len(a.methods)} methods, psi map '{a.psi_map}'", flush=True)
 
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    with open(out / "per_traj.csv", "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=list(rows[0]))
-        w.writeheader()
-        w.writerows(rows)
+
+    def write_partial_csv(rows):
+        sorted_rows = sorted(rows, key=lambda r: (r["group"], r["file"], METHODS.index(r["method"])))
+        tmp = out / "per_traj.csv.tmp"
+        with open(tmp, "w", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=list(sorted_rows[0]))
+            w.writeheader()
+            w.writerows(sorted_rows)
+        tmp.replace(out / "per_traj.csv")  # atomic: a reader never sees a half-written file
+        return sorted_rows
+
+    rows, t0 = [], time.time()
+    with Pool(initializer=_init, initargs=(net,)) as pool:
+        for i, rs in enumerate(pool.imap_unordered(_job, jobs), 1):
+            rows.extend(rs)
+            if i % 20 == 0 or i == len(jobs):
+                dt = time.time() - t0
+                rate = i / dt
+                eta_s = (len(jobs) - i) / rate if rate > 0 else float("nan")
+                print(f"{i}/{len(jobs)} trajectories ({dt/60:.1f} min elapsed, ETA {eta_s/60:.1f} min)", flush=True)
+                write_partial_csv(rows)
+    rows = write_partial_csv(rows)
+
     names = {mid: make(mid, net).name for mid in a.methods}
     (out / "summary.md").write_text(f"ψ map: {a.psi_map}, speed cap {a.qd_max:.2f} rad/s, hold {a.hold_s} s, "
                                     f"output interpolation {'off' if a.no_interp else 'on'}\n\n"

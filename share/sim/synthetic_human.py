@@ -33,9 +33,15 @@ Writes outputs/synthetic/<scenario>/<name>.npz, manifest.json and plots/ (output
 
 from __future__ import annotations
 
+import os
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")  # each Pool worker already parallelizes across
+os.environ.setdefault("OMP_NUM_THREADS", "1")        # trajectories; BLAS threads on top of that just
+os.environ.setdefault("MKL_NUM_THREADS", "1")        # oversubscribe the cores for these small matrices
+
 import argparse
 import json
 import subprocess
+import sys
 from dataclasses import asdict, dataclass, field
 from multiprocessing import Pool
 from pathlib import Path
@@ -292,9 +298,14 @@ def _init():
 
 def _job(args):
     scenario, seed, idx, drop, cfg, out_dir = args
-    data, meta = generate(_m, scenario, seed, idx, drop, cfg, _reach)
     tag = f"{scenario}" + (f"_drop{int(drop * 1000)}ms" if scenario in OCCLUDING else "")
     path = Path(out_dir) / tag / f"{tag}_s{seed}_{idx:03d}.npz"
+    if path.exists():  # resume: a prior (possibly killed) run already wrote this one, don't redo the work
+        cached = np.load(path, allow_pickle=True)
+        meta = json.loads(str(cached["meta"]))
+        data = {k: cached[k] for k in cached.files if k != "meta"}
+        return str(path.relative_to(out_dir)), meta, data
+    data, meta = generate(_m, scenario, seed, idx, drop, cfg, _reach)
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(path, meta=json.dumps(meta), **data)
     return str(path.relative_to(out_dir)), meta, data
@@ -363,22 +374,42 @@ def main():
     jobs = [(s, seed, i, d, cfg, str(out)) for s in a.scenarios for d in (a.dropouts if s in OCCLUDING else [0.0])
             for seed in a.seeds for i in range(a.n_traj)]
     print(f"{len(jobs)} trajectories -> {out}")
-    files, plotted = [], set()
+    m = k.Nero.from_urdf()
+    base_manifest = {"git_sha": git_sha(), "urdf": str(k.URDF_PATH.name), "reach_J4_m": list(reach_bounds(m)),
+                      "config": asdict(cfg), "args": vars(a),
+                      "occlusion_state_codes": {"visible": VISIBLE, "elbow_hidden": ELBOW_HIDDEN, "wrist_hidden": WRIST_HIDDEN}}
+
+    def write_manifest(files, failed, complete):
+        manifest = {**base_manifest, "n_jobs": len(jobs), "complete": complete, "files": files, "failed_jobs": failed}
+        tmp = out / "manifest.json.tmp"
+        tmp.write_text(json.dumps(manifest, indent=2))
+        tmp.replace(out / "manifest.json")  # atomic: a reader never sees a half-written file
+
+    out.mkdir(parents=True, exist_ok=True)
+    files, plotted, failed = [], set(), []
     with Pool(initializer=_init) as pool:
-        for rel, meta, data in pool.imap(_job, jobs, chunksize=2):
+        it = pool.imap(_job, jobs, chunksize=2)
+        for job_idx in range(len(jobs)):
+            try:
+                rel, meta, data = next(it)
+            except StopIteration:
+                break
+            except Exception as e:
+                s, seed, i = jobs[job_idx][0], jobs[job_idx][1], jobs[job_idx][2]
+                print(f"job failed, skipping: scenario={s} seed={seed} idx={i}: {e}", file=sys.stderr)
+                failed.append({"scenario": s, "seed": seed, "index": i, "error": str(e)})
+                continue
             files.append({"file": rel, **meta})
             group = Path(rel).parent.name
             if a.plot and group not in plotted:
                 plotted.add(group)
                 (out / "plots").mkdir(parents=True, exist_ok=True)
                 plot(out / "plots" / f"{group}.png", data, meta)
-    m = k.Nero.from_urdf()
-    manifest = {"git_sha": git_sha(), "urdf": str(k.URDF_PATH.name), "reach_J4_m": list(reach_bounds(m)),
-                "config": asdict(cfg), "args": vars(a),
-                "occlusion_state_codes": {"visible": VISIBLE, "elbow_hidden": ELBOW_HIDDEN, "wrist_hidden": WRIST_HIDDEN},
-                "files": files}
-    (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
-    print(f"wrote {len(files)} files, manifest.json" + (f", {len(plotted)} plots" if a.plot else ""))
+            if len(files) % 10 == 0:  # so a killed/crashed run still leaves a usable (if partial) manifest
+                write_manifest(files, failed, complete=False)
+    write_manifest(files, failed, complete=True)
+    print(f"wrote {len(files)} files, manifest.json" + (f", {len(plotted)} plots" if a.plot else "")
+          + (f", {len(failed)} jobs failed (see manifest.failed_jobs)" if failed else ""))
 
 
 if __name__ == "__main__":
