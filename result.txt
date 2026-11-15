@@ -1,0 +1,424 @@
+================================================================================
+EX04 Solver 재현성 및 추가 정량 평가 — 최종 결과 보고서 (result.txt)
+================================================================================
+작성일: 2026-11-14
+작성자: Claude Code (자동 실험 실행 및 분석)
+
+본 문서의 모든 수치는 아래 명시된 로그 파일(per_traj.csv)에서 "새로 측정"했거나,
+2026-11-14 작업에서 "기존 로그 재사용"한 것입니다. 추정/가정에는 [가정] 표시를,
+아직 측정하지 않은 항목에는 NOT MEASURED를 명시했습니다. 수치를 부풀리거나 실패
+사례를 제외하지 않았습니다 — 아래 3번·7번 항목에서 제안 방법(P, P-canonical)이
+다수의 지표에서 기존 baseline에 뒤지는 경우를 그대로 보고합니다.
+
+
+--------------------------------------------------------------------------------
+1. 실험 개요
+--------------------------------------------------------------------------------
+
+- 날짜: 2026-11-14
+- Git 브랜치: feat/ex04-canonical-solver
+- 이번 보고서가 사용하는 전체 894개 실행의 커밋 SHA: 267dc670c6cb0af12ea543aa549a00d63e83036b
+  (= run_baselines.py 실행 당시 HEAD. config.json의 git_sha 필드로 기록됨)
+- 데이터셋: outputs/synthetic, manifest sha1 = 695c1c6178650fa844193e734be00bad5f5bac9f
+  (894 trajectories, 시나리오 S1/S2/S3 + S4/S5/S6 × dropout 200/500/1000/2000ms)
+- 환경: Jetson AGX Orin, Python 3, numpy/scipy, OPENBLAS_NUM_THREADS=OMP_NUM_THREADS=
+  MKL_NUM_THREADS=1 (8-worker multiprocessing.Pool 오버서브스크립션 방지)
+- 비교 대상 방법 (12개): B0 wrist-DLS, B1 SEW-Mimic, B2 AEAC+J-PARSE, B3 DLS+OneEuro,
+  B4 DLS+Kalman, B5 AKC+IK, B6 learned-ψ+IK, B7 belief-weighted IK, B8 belief-MAP→IK,
+  P (기존, Oracle-Σ Feasible-MAP, 비-canonical), B7c (B7의 canonical 변형),
+  Pc = P-canonical (신규, canonical reference + 분리된 TrackSafe 레이어)
+- 실행 설정: psi_map=mirror, qd_max=π rad/s, hold_s=0.5s, interpolation 사용
+- 전체 실행 로그: ~/run_baselines_full2.log (894/894 완료, 총 소요 290.5분)
+- 원본 데이터: share/sim/outputs/baselines_full2/{per_traj.csv, summary.md, config.json}
+
+전체 로그 및 데이터 위치 (모두 이 저장소/머신 기준 경로):
+
+  [원시 실행 로그 — raw log]
+  - ~/run_baselines_full2.log
+      12개 방법 × 894개 trajectory 전체 실행의 원시 콘솔 로그. 20개 trajectory마다
+      진행률/경과시간/ETA가 기록됨 (예: "894/894 trajectories (290.5 min elapsed,
+      ETA 0.0 min)"). 본 result.txt의 §2-§7 수치가 나온 실행 그 자체의 로그.
+
+  [이번 실행의 결과 데이터 — share/sim/outputs/]
+  - share/sim/outputs/baselines_full2/per_traj.csv   전체 10,729행 원본 trajectory별 지표
+  - share/sim/outputs/baselines_full2/summary.md     시나리오별(S1-S6×dropout) 집계 표
+  - share/sim/outputs/baselines_full2/config.json    git_sha/data_manifest_sha/실행 인자 기록
+
+  [재현성 비교에 쓴 과거(부분) 실행 로그/데이터]
+  - share/sim/outputs/baselines_P/          B0-B8, P만 실행한 이전 결과 (§2 재현성 검증 기준)
+  - share/sim/outputs/baselines_canonical/  B7c, Pc만 실행한 이전 결과 (§2 재현성 검증 기준)
+
+  [그 외 실험 서술/보조 로그 — share/11.14_exp/]
+  - share/11.14_exp/2026-11-14_log.txt                      2026-11-14 작업 일지
+  - share/11.14_exp/EX04_joint_consistency_results.md       canonical solver 1차 보고서(이전 세션)
+  - share/11.14_exp/canonical_summary.csv / .md             canonical 1차 보고서용 집계
+  - share/11.14_exp/canonical_branch_ambiguity.json         분기 중의성 샘플링 결과
+  - share/11.14_exp/canonical_config.json                   위 1차 실행의 config
+  - share/11.14_exp/r3_noise_summary.csv                    R3 노이즈 민감도 결과 (§4 R3 근거)
+
+
+--------------------------------------------------------------------------------
+2. 기존 894개 실험 재현 결과 (Experiment A)
+--------------------------------------------------------------------------------
+
+재현성 검증 방법: 이전에 따로 실행했던 두 개의 과거 결과물
+  - share/sim/outputs/baselines_P/          (B0-B8, P만, 2026-11-14 새벽 실행)
+  - share/sim/outputs/baselines_canonical/  (B7c, Pc만, 2026-11-14 오후 실행)
+을 이번 전체 12-방법 실행 결과(outputs/baselines_full2)와 (group, file, method) 키로
+병합하여, 동일 데이터·동일 시드·동일 safety 조건에서 수치가 일치하는지 직접 비교함.
+
+결과 (새로 측정):
+  - B0-B8, P (8,940 행 전체) : wrist_mm_p50/p95, wrist_deg_p50/p95, psi_feasible_pct,
+    psi_p90, regret_p50, psi_jumps, jerk_rms, recovery_jump_deg, recovery_path_deg,
+    recovery_capped_pct, held_pct — 전부 최대 절대 차이 0.0 (완전히 bit-identical)
+  - B7c, Pc (1,788행 전체) : 위와 동일하게 전부 최대 절대 차이 0.0
+  - 유일하게 차이가 나는 항목은 runtime_p95_ms (실행 시점 CPU 부하에 따른 실제
+    wall-clock 측정값이므로 결정론적이지 않은 것이 당연함; B0-P 최대 차이 121.1ms,
+    B7c/Pc 최대 차이 58.1ms) — 이는 연산 결과가 아니라 측정 시점의 머신 부하 차이이며
+    솔버 자체의 비결정성이 아님.
+
+결론: 기존 894개(및 B7c/Pc 1,788개) 실험은 100% 재현됨. 불일치 원인 추적이 필요한
+케이스는 존재하지 않았음 (BLAS/시드/데이터셋/초기 관절각 모두 동일 결과 산출).
+이번 전체 실행은 과거 실행을 그대로 "재사용"하지 않고 전부 "재실행"했으며, 그 결과가
+과거 로그와 정확히 일치함을 확인한 것 — 가장 강한 형태의 재현성 증거.
+
+
+--------------------------------------------------------------------------------
+3. 전체 Solver 성능 비교표 (B0-B8, P, B7c, Pc / 894개 trajectory 평균)
+--------------------------------------------------------------------------------
+
+아래 표는 각 방법에 대해 894개 trajectory 각각의 지표(이미 trajectory 내부에서
+percentile로 계산된 값)를 다시 평균낸 것입니다. (단위: mm, deg, ms 등 표기대로)
+
+| 방법 | 손목오차 P50(mm) | 손목오차 P95(mm) | ψ오차 P50(°) | ψ오차 P90(°) | jerk RMS | 복귀점프(°) | 복귀시간(s) | 15Hz 데드라인 미스율(%) | 계산 P95(ms) | 관절한계여유 최소(°) | solver 실패율(%) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| B0 wrist-DLS       | 15.58 | 35.31  | 61.75 | 87.99  | 5787  | 1.76   | 0.05 | 0.00  | 2.20   | 13.94 | 0.0 |
+| B1 SEW-Mimic        | 57.13 | 239.06 | 9.04  | 29.07  | 14484 | 94.04  | 1.14 | 0.00  | 2.25   | 1.22  | 0.0 |
+| B2 AEAC+J-PARSE     | 33.13 | 90.75  | 12.84 | 39.96  | 6868  | 1.79   | 0.33 | 0.00  | 7.75   | 2.40  | 0.0 |
+| B3 DLS+OneEuro      | 16.64 | 35.80  | 61.74 | 87.96  | 2151  | 0.96   | 0.07 | 0.00  | 2.29   | 15.33 | 0.0 |
+| B4 DLS+Kalman       | 15.45 | 36.20  | 61.77 | 88.04  | 2575  | 1.27   | 0.05 | 0.00  | 2.81   | 14.33 | 0.0 |
+| B5 AKC+IK           | 25.17 | 185.16 | 8.10  | 30.26  | 11412 | 78.05  | 0.30 | 41.55 | 212.31 | 1.21  | 0.0 |
+| B6 learned-ψ+IK     | 78.13 | 202.83 | 69.32 | 122.52 | 19792 | 143.52 | 1.73 | 42.51 | 201.37 | 0.16  | 0.0 |
+| B7 belief-weighted IK | 31.90 | 142.65 | 11.94 | 37.38  | 6670  | 25.79  | 0.50 | 99.67 | 163.17 | 1.10  | 0.0 |
+| B8 belief-MAP->IK   | 34.01 | 193.83 | 8.71  | 29.91  | 8490  | 78.50  | 0.50 | 41.67 | 207.29 | 1.25  | 0.0 |
+| P (기존, Oracle-Σ Feasible-MAP) | 31.86 | 141.48 | 11.93 | 37.13 | 6569 | 22.04 | 0.49 | 98.57 | 162.06 | 1.12 | 0.0 |
+| B7c (B7 canonical)  | 55.09 | 278.79 | 10.54 | 35.18  | 9062  | 115.94 | 0.71 | 26.86 | 52.19  | 1.96  | 0.0 |
+| Pc = P-canonical (신규) | 54.86 | 277.96 | 10.58 | 35.25 | 8933 | 109.78 | 0.69 | 26.75 | 51.98 | 2.01 | 0.0 |
+
+solver_fail_pct(값이 있었는데 솔버가 유효한 q를 못 만든 비율)는 모든 방법에서 0%.
+즉, 어느 방법도 "조용히 실패"하지는 않았음 — canonical 계열은 불가능할 때
+pose_relaxed=True로 명시적으로 플래그하고 home으로 fallback.
+
+통계적으로 유의한 쌍별 비교 (전체 894개 trajectory, paired bootstrap 95% CI,
+5000회 리샘플, trajectory 단위로 짝지음 — frame을 독립 샘플로 취급하지 않음):
+
+  P - B7  (wrist_mm_p50)      : 평균차 +0.043mm   95% CI [-0.14, 0.22]   → 차이 없음(유의하지 않음)
+  P - B7  (recovery_jump_deg) : 평균차 -3.75°      95% CI [-4.56, -3.02] → P가 유의하게 더 좋음 (B7의 25.79°에서 14.6% 상대개선)
+  P - B7  (jerk_rms)          : 평균차 -101.3       95% CI [-117.1,-86.3] → P가 유의하게 더 좋음 (B7의 6670에서 1.5% 상대개선)
+  Pc - B7c (recovery_jump_deg): 평균차 -6.16°      95% CI [-8.69,-3.82]  → Pc가 유의하게 더 좋음 (B7c의 115.94°에서 5.3% 상대개선)
+  Pc - B7c (deadline_miss_pct): 평균차 -0.11pp     95% CI [-0.23,+0.01] → 차이 없음(유의하지 않음, 0을 포함)
+
+  ** Pc(신규) - P(기존), 즉 "canonical화의 대가" **
+  wrist_mm_p50       : +23.00mm 더 나쁨   95% CI [+19.89, +26.23]  (유의)
+  recovery_jump_deg  : +87.74°  더 나쁨   95% CI [+80.44, +95.30]  (유의, n=714 occlusion 있는 trajectory만)
+  jerk_rms           : +2364    더 나쁨   95% CI [+2253, +2479]    (유의)
+  deadline_miss_pct  : -71.82pp 더 좋음   95% CI [-73.69,-69.94]   (유의, 15Hz 데드라인 미스율이 압도적으로 개선)
+
+  ** "B0-B8 전체 중 trajectory별 최선"과 비교 (단일 B7 고정이 아닌, 매 trajectory마다
+     가장 좋은 baseline을 골라서 비교 — 사용자 지시에 따라 P를 최고로 가정하지 않음) **
+  wrist_mm_p50      : P가 894개 중 100.0%에서 최선-baseline보다 나쁨 (평균 +16.8mm, 최선은 주로 B4/B0/B3)
+                      Pc는 894개 중 100.0%에서 최선-baseline보다 나쁨 (평균 +39.8mm)
+  recovery_jump_deg : P가 714개 중 99.7%에서 나쁨 (평균 +21.1°, 최선은 주로 B3/B4)
+                      Pc는 714개 중 100.0%에서 나쁨 (평균 +108.8°)
+  jerk_rms          : P가 894개 중 100.0%에서 나쁨, Pc도 100.0%에서 나쁨 (최선은 거의 항상 B3)
+  psi_p50(ψ오차)    : P가 745개 중 81.5%에서 "최선 baseline"보다 나쁨(최선은 주로 B5/B2/B7/B8);
+                      평균 psi_p50은 B5=8.10°, B8=8.71°로 P(11.93°)보다 더 낮음(=더 좋음).
+
+  해석: 손목위치/jerk만 보면 B0/B3/B4(순수 DLS 계열, ψ를 전혀 고려하지 않음)가 항상
+  이김 — 이는 당연한 결과로, 이 방법들은 팔꿉 방향(ψ)을 전혀 맞추려 하지 않기 때문에
+  손목 추종만으로는 트레이드오프가 없음. 반면 ψ(팔꿉 의도) 정확도까지 고려하면 B5/B8이
+  P보다도 평균적으로 더 낮은 ψ오차를 보임 — "P가 모든 지표에서 최고"라는 가정은
+  데이터로 반증됨 (사용자가 사전에 경고한 바로 그 함정).
+
+
+--------------------------------------------------------------------------------
+4. 관절각 재현성 R1-R6 판정
+--------------------------------------------------------------------------------
+
+R1 — 동일 belief, N≥100회 반복/프로세스 재시작/호출순서 역전 시 q_ref 결정성
+  판정: PASS
+  근거: share/sim/tests/test_canonical.py::test_r1_repeated_calls_are_bit_identical,
+  test_r1_call_order_independent, test_r1_independent_of_process (subprocess로 별도
+  프로세스 실행) 모두 통과. q_ref 최대 차이 = 0.0 (요구 기준 ≤1e-6 rad보다 훨씬 엄격하게
+  만족 — RNG/warm-start를 전혀 쓰지 않는 결정론적 그리드 탐색이므로 bit-identical).
+
+R2 — 다른 초기 q/호출 이력에서도 동일 belief면 동일 canonical target
+  판정: PASS
+  근거: test_r2_q_ref_independent_of_q_start (B7c/Pc 양쪽 parametrize),
+  test_r2_q_ref_independent_of_call_history 통과. 코드 상으로도
+  canonical_feasible_map()의 인자에 q_prev/q_track이 전혀 포함되지 않음 (04_proposed_
+  solver.md의 "q_ref에 q_t-1을 넣으면 R-CANON과 충돌한다" 경고를 그대로 준수).
+
+R3 — 동일 실제 자세 + 관측 노이즈 수준 변화에 따른 q_ref 민감도
+  판정: PASS (불연속/단일답으로의 붕괴 없음)
+  근거: share/sim/analyze_r3_noise.py, 150 trials × 8 random pose, noise 0×-8×
+  (기준 15mm/5°). 결과(share/11.14_exp/r3_noise_summary.csv):
+    noise 0×   : dq 없음(노이즈 0), infeasible 0%
+    noise 0.33×: dq P50/P95 ≈ 4.5°/31.2°, infeasible ≈13.5%
+    noise 1×   : dq P50/P95 ≈ 12.45°/79.44°, wrist오차 P50/P95 ≈21.7/40.7mm, infeasible 23.3%
+    noise 8×   : dq P50/P95 ≈ 84.78°/173.38°, infeasible 54.6%
+  노이즈가 커질수록 매끄럽고 단조적으로 민감도가 증가 — 특정 노이즈 수준에서 급격히
+  불안정해지는 현상(discontinuity)은 없음. 다만 noise=1×(실측 수준) 에서 이미 dq P50이
+  12°대라는 것은, 실제 perception 노이즈 수준에서도 canonical target이 적지 않게
+  흔들릴 수 있음을 시사함 — 이는 [가정] perception 노이즈가 실제로 이 크기라는 전제
+  하의 결과이며, Oracle-Σ(실측 아님) 데이터이므로 그대로 EX05 실측과 비교해야 함.
+
+R4 — elbow/wrist occlusion 및 재인식 시 거동
+  판정: PARTIAL
+  근거(새로 측정, outputs/baselines_full2): occlusion이 있는 S4/S5/S6 (714개 trajectory)에서
+  canonical 계열(B7c/Pc)의 recovery_jump_deg, recovery_time_s, jerk_rms가 비-canonical
+  계열(B7/P)보다 전부 유의하게 나쁨 (Pc-P: +87.74°, 95% CI 전부 양수). 재인식 자체는
+  항상 결정론적으로 발생(hold→목표 복귀, solver_fail 0%)하지만, "복귀 품질"은 canonical화로
+  인해 악화됨. 단, S5_drop2000ms(가장 긴 dropout)에서는 canonical 내부 비교(B7c→Pc)가
+  -31.0%, 비-canonical 내부 비교(B7→P)가 -31.1%로 거의 동일한 상대개선을 보여 "적응형
+  추종 시정수"라는 개선 메커니즘 자체는 canonical 여부와 무관하게 동작함을 확인.
+  → 결정성/메커니즘은 PASS급이나, 실질적 복귀 품질 개선이라는 목표는 FAIL에 가까움.
+
+R5 — feasible arc / joint limit / singularity 경계에서의 거동
+  판정: PASS
+  근거: test_pose_relaxed_falls_back_to_home_and_flags_infeasible 통과 (불가능 시
+  pose_relaxed=True로 명시 플래그 + home fallback, 전역 continuity를 억지로 보장하지
+  않음 — 설계 문서의 "singularity 근방에서 global continuity 보장 금지" 요구와 일치).
+  joint_limit_margin_min_deg는 canonical 계열이 오히려 약간 더 큼(B7c/Pc 1.96-2.01°
+  vs B7/P 1.10-1.12°) — 관절한계 여유 측면에서는 canonical이 소폭 더 안전함.
+
+R6 — 동일 손목 SE(3), 다른 elbow ψ belief가 하나의 q로 붕괴되지 않음
+  판정: PASS
+  근거: test_r6_different_psi_is_not_collapsed_to_one_q 통과. 실측 데이터에서도
+  branch_switch_count_exact(canonical 계열에서 trajectory당 평균 7.66회 분기 전환)가
+  0이 아님 — 여러 분기가 실제로 다르게 선택되고 있어 단일 해로 붕괴되지 않음을 확인.
+
+R1-R6 종합: 결정성/수학적 정합성(R1,R2,R5,R6) 4개는 모두 깨끗한 PASS, 노이즈
+안정성(R3)도 PASS. 유일한 PARTIAL은 "occlusion 재인식 성능"(R4)이며, 이것이 바로
+아래 G1 게이트가 canonical 변형에서 실패하는 핵심 원인과 동일함.
+
+
+--------------------------------------------------------------------------------
+5. P-old(비-canonical) vs P-canonical 비교
+--------------------------------------------------------------------------------
+
+변경된 것:
+  - share/sim/canonical.py 신규 (CanonicalFeasibleMAP: q_prev/warm-start 없이 belief만의
+    함수로 q_ref·branch_id·psi_ref를 결정론적으로 산출. TrackSafe: 1차 지연필터로
+    q_ref를 따라가는 별도의 상태 유지형 추종 레이어)
+  - P-canonical은 기존 P와 동일한 적응형 시정수(τ = τ0 × max(1, (σ/σ0)²), 여기서 σ는
+    belief wrist 표준편차)를 사용하되, 그 대상이 "현재 q에 의존하는 Oracle-Σ 가중
+    비용함수의 최적해"가 아니라 "belief만으로 결정되는 canonical q_ref"로 바뀜.
+
+개선된 것:
+  - R-CANON(결정성) 요구를 R1/R2 기준 완전히 만족 (기존 P는 이 요구를 만족하지
+    못함 — common_ik()가 "현재 q에 가장 가까운 분기"를 명시적으로 선택하므로 호출
+    이력/이전 q에 의존적임)
+  - occlusion이 없는 구간(S1-S3, 180개 trajectory)에서는 손목오차·계산시간 모두
+    canonical이 약간 더 좋거나 비슷함 (이전 보고서 EX04_joint_consistency_results.md
+    §4.1 참조: 손목 -3.1mm, 계산시간 ~3배 빠름 — 당시 2° 그리드였고, 이번 10° 그리드
+    버전도 occlusion-free에서는 B7c/Pc의 joint_dev_deg_p50이 10.4-22.9°로 B7/P의
+    30-84°보다 훨씬 작음, 이는 oracle 자체가 canonical 기준이라 당연히 가까운 값)
+  - 안전 여유(joint_limit_margin_min_deg) 소폭 개선 (+0.8-0.9°)
+
+악화된 것:
+  - occlusion이 있는 구간(S4-S6, 714개 trajectory)에서 복귀 점프(+87.7°), jerk(+2364),
+    손목오차(+23mm) 모두 유의하게 악화 — §3/§4의 R4 PARTIAL 판정과 동일 근거
+  - 10° grid로 낮춘 탐색 해상도 자체가 ψ 정밀도의 상한을 제한함 (아래 §6/§7 참고)
+
+재현성 준수 여부: 완전 준수. R1/R2가 PASS이므로 canonical 구조는 "belief의 순수 함수"
+라는 설계 목표를 달성했음. 다만 이 순수성(현재 상태를 무시함)이 바로 occlusion 복귀
+악화의 원인이기도 함 — "canonical 기준 자체"는 상태-독립적이어야 하지만, "실제로
+추종하는 대상"은 상태-연속성을 더 배려해야 한다는 구조적 긴장이 실측으로 확인됨.
+
+
+--------------------------------------------------------------------------------
+6. G1 및 다음 Gate 판정
+--------------------------------------------------------------------------------
+
+share/docs/experiment_roadmap.md에 명시된 사전등록 기준 (관측값이 아니라 사전에
+정한 목표): "strongest fair baseline 대비 wrist 비열화 median +5mm/+5° 이내, 그리고
+ψP90/jerk/recovery 중 사전 선정 1차 지표에서 15-20% 실질 개선."
+
+(a) 기존 P vs B7 (strongest fair baseline, 같은 belief-weighted 계열 중 최강) — 이번에
+    894개로 재확인:
+    - 손목 비열화: +0.04mm → ±5mm 기준 PASS (거의 완벽히 동일)
+    - 1차 지표(복귀 점프) 개선: 14.6% → 목표 15-20%에 근소하게 못 미침
+    - jerk 개선: 1.5% → 목표에 크게 못 미침
+    판정: PARTIAL (방향은 맞고 통계적으로 유의하지만, 사전등록한 15% 문턱을 근소하게
+    충족하지 못함)
+
+(b) 신규 P-canonical vs B7 (canonical 변형의 G1 재평가):
+    - 손목 비열화: +23.0mm → ±5mm 기준 명백히 FAIL
+    - 복귀 점프: +87.7° "악화"(개선 아님) → FAIL
+    판정: FAIL (canonical화는 결정성은 얻었지만 G1의 성능 기준은 충족하지 못함)
+
+(c) R-CANON 자체 (결정성 요구, G1과 별개 기준):
+    판정: PASS (§4 R1/R2 참조, 0.0 오차로 기준 1e-6 rad보다 훨씬 엄격히 만족)
+
+(d) "B0-B8 전체 중 최선" 대비 (더 엄격한 해석):
+    P, P-canonical 모두 손목오차/jerk/복귀 거의 모든 지표에서 100%에 가까운 비율로
+    최선-baseline에 뒤짐 (§3 하단 표). 이 해석대로면 G1은 명백히 FAIL.
+
+종합 G1 판정: PARTIAL/FAIL.
+  - 결정성(R-CANON) 측면은 확실한 성공.
+  - 기존 비-canonical P의 "성능 기여"는 유의하지만 사전등록 문턱에 약간 못 미치는
+    수준(PARTIAL) — 이는 2026-11-14 새벽 실행 때부터 일관된 결론.
+  - 신규 canonical 변형은 성능 기준을 명백히 충족하지 못함(FAIL) — 결정성을 얻은
+    대가로 occlusion 복귀 성능을 잃음.
+  - roadmap §8의 "G1 Oracle solver 기여 없음" 대응 지침("confidence-weighted
+    baseline과 구조적 차이 분석, branch/occlusion objective 개선한 뒤 재실험")을
+    아직 canonical 변형에 적용하지 못한 상태.
+
+다음 Gate(G2a, EX05)로의 적용 가능성: EX05는 실제 인간 occlusion 데이터 수집/GT
+검증이 목적이며 G1 통과를 전제조건으로 하지 않음(roadmap "EX06 학습 및 EX07 통합은
+EX05 data quality + EX04 oracle value가 확인된 뒤"라고만 되어 있어 EX05 자체는
+독립적으로 진행 가능). 단, EX06(학습 고도화)·EX07(실시간 결합 제어)·EX08(실기)은
+G1이 명확히 통과하기 전에는 시기상조.
+
+
+--------------------------------------------------------------------------------
+7. 현재 연구의 가장 큰 문제 3개
+--------------------------------------------------------------------------------
+
+[문제 1] Occlusion 중 분기 전환(branch switching)으로 인한 복귀 성능 악화
+  근거: canonical 계열 평균 7.66회/trajectory 분기 전환(branch_switch_count_exact);
+  occlusion 구간에서 Pc가 P보다 복귀 점프 +87.7°, jerk +2364 악화(둘 다 95% CI가
+  0을 포함하지 않음, §3/§4 R4).
+  원인: DetTieBreak가 "home 거리" 기준으로 분기를 고르기 때문에, belief가 occlusion
+  중 이동하면 이전에 추종하던 분기와 전혀 다른 분기가 새로운 canonical 해로 뽑힐 수
+  있음 — q_ref 자체는 "belief의 순수 함수"여야 한다는 R-CANON 요구와, "현재 상태에서
+  가까운 해를 선호해야 한다"는 연속성 요구가 구조적으로 충돌.
+  우선순위: 최상 (G1 FAIL의 직접 원인)
+  해결 방향: q_ref(보고/검증용, canonical 유지)와 실제 추종 대상을 분리하여, TrackSafe
+  내부에서 "현재 q_track과 비용이 근접한 분기들 중 더 가까운 쪽"을 우선하는 branch-aware
+  re-ranking을 추가 (ablation (d) "no branch-aware tracking"을 해소하는 방향). R1/R2
+  검증은 q_ref에만 적용되므로 이 변경이 R-CANON을 해치지 않음.
+
+[문제 2] 15Hz 관측 주기 기준 실시간성 미달
+  근거: B7/P는 deadline_miss_pct ≈ 98.6-99.7%(거의 항상 66.7ms 예산을 초과); 10°
+  그리드로 낮춘 B7c/Pc도 26.75-26.86%가 여전히 데드라인을 놓침; S3 시나리오 단독
+  계산 P95는 여전히 140-200ms대.
+  원인: canonical_feasible_map()의 psi 그리드 전수 탐색과, targets()/common_ik()의
+  2° fallback grid-scan이 프레임마다 "분기 수 × 그리드 포인트 수"에 선형으로 비용이
+  들고, 캐싱/warm-start가 전혀 없음. S3는 feasible psi 구간이 좁아(~22%) 탐색이 끝까지
+  돌아가는 최악 케이스가 많음.
+  우선순위: 상 (EX07/EX08 실기 적용의 직접적 선행조건)
+  해결 방향: analytic feasible-arc 경계(이미 구현된 feasible_arcs())를 이용해 탐색
+  범위를 사전에 좁히거나, 직전 프레임의 feasible 분기 구조를 캐시해 매 프레임 전수
+  탐색을 피하는 것. 단, 어떤 가속을 적용하든 정확도-실시간성 트레이드오프를 반드시
+  재측정해 기록해야 함(§6/roadmap의 "성능 개선을 확인했다는 뜻이 아니다" 원칙).
+
+[문제 3] Oracle-Σ 가정 의존 + "P가 최고"라는 암묵적 서사의 근거 부족
+  근거: 모든 수치가 실측 belief covariance가 아니라 생성기가 주입한 "정답에 가까운"
+  Oracle-Σ를 사용(§1); R3에서 실제 노이즈 수준(1×)에서도 canonical target이 dq P50
+  12.45° 흔들림을 보임. 그리고 §3에서 보듯 "B0-B8 전체 중 trajectory별 최선"과 비교
+  하면 P/Pc가 손목오차·jerk·복귀 거의 전부에서 B3/B4/B5/B8에 뒤짐; ψ오차 평균조차
+  B5(8.10°)·B8(8.71°)가 P(11.93°)보다 낮음.
+  원인: 벨리프 추정 자체는 EX06(학습) 단계 이전이라 실측이 아니며, 성능 비교도
+  지금까지 "B7 대비"로만 좁게 해왔기 때문에 더 넓은 baseline 집합에서는 더 미묘한
+  그림이 나옴 — 특정 지표만 보면 다른 baseline이 쉽게 이길 수 있음.
+  우선순위: 중 (EX05/EX06 설계에 영향)
+  해결 방향: EX05에서 실제 사람 occlusion 데이터로 R3 스타일 민감도 재측정, 그리고
+  단일 "최고 solver" 주장 대신 다차원 trade-off(ψ 정확도 vs 손목 정확도 vs 실시간성)
+  표를 1차 결과물로 고정해 보고하는 방식으로 전환.
+
+
+--------------------------------------------------------------------------------
+8. 최종 결론
+--------------------------------------------------------------------------------
+
+판정: PARTIAL
+
+증명된 것:
+  - Canonical reference solver는 R-CANON(결정성) 요구를 R1/R2 기준 정확히(오차 0.0)
+    만족한다 — belief가 같으면 q_prev/호출 이력/프로세스와 무관하게 동일한 q_ref가
+    나온다는 설계 목표는 실측으로 확실히 증명됨.
+  - 같은 belief에서 서로 다른 elbow 의도(ψ)는 하나의 q로 붕괴되지 않는다(R6 PASS).
+  - 894개 과거 실험은 100% bit-identical로 재현되었다(재현성 공정성 보장).
+  - 기존(비-canonical) P는 B7 대비 복귀 점프 -14.6%, jerk -1.5%로 통계적으로 유의한
+    (그러나 사전등록 목표 15-20%에는 못 미치는) 개선을 보인다.
+
+증명되지 않은 것 / 반증된 것:
+  - Canonical화 자체가 occlusion 복귀 성능을 개선한다는 가설은 반증됨 — 오히려
+    복귀 점프·jerk·손목오차가 모두 악화됨(§3/§4/§6).
+  - "제안 방법(P/Pc)이 전체 baseline 중 최고"라는 narrative는 반증됨 — 손목/jerk는
+    단순 DLS 계열이, ψ오차는 B5/B8이 평균적으로 더 낮음.
+  - 15Hz 실시간 제어 루프에 그대로 올릴 수 있다는 주장은 반증됨 — B7/P는 거의 항상
+    데드라인을 놓치고, 해상도를 낮춘 canonical 변형도 26-27%를 놓침.
+
+EX05-EX08 진행 권고:
+  - EX05(실제 인간 occlusion 데이터 수집)는 G1과 독립적인 게이트(G2a)이므로 진행 가능.
+  - EX06(belief 학습 고도화)·EX07(결합 솔버 실시간 결합)·EX08(실기)는 보류 권고.
+    roadmap §8 "G1 Oracle solver 기여 없음" 대응 지침에 따라, (1) branch-aware
+    tracking으로 occlusion 복귀 문제를 수정하고, (2) 실시간성 문제를 해결하거나
+    최소한 명시적 트레이드오프로 정량화한 뒤, G1을 재평가하는 것을 다음 단계로 권고.
+  - 실제 NERO 로봇은 이번 작업에서도 전혀 구동하지 않았음(요청대로 시뮬레이션에서만
+    실행).
+
+
+--------------------------------------------------------------------------------
+9. 재현 명령어
+--------------------------------------------------------------------------------
+
+# 1) 저장소 체크아웃 및 커밋 고정
+git clone https://github.com/dldbdlf/teleoperation.git
+cd teleoperation
+git checkout 267dc670c6cb0af12ea543aa549a00d63e83036b   # 본 result.txt의 §2-§7 데이터 기준
+# (본 커밋 이후 result.txt 자체를 커밋하는 새 커밋이 하나 더 있음 — §10 참고)
+
+# 2) 유닛/회귀 테스트 (42개, 소요 약 232초)
+cd share/sim
+python3 -m pytest -q tests/
+
+# 3) R3 노이즈 민감도 재현 (소요 약 수분)
+python3 analyze_r3_noise.py --trials 150 --poses 8
+
+# 4) 전체 12-방법 × 894-trajectory 재현 (소요 약 290분, 8-core 기준)
+#    주의: data_manifest_sha가 695c1c6178650fa844193e734be00bad5f5bac9f와
+#    일치하는지 outputs/synthetic 디렉토리로 먼저 확인할 것
+python3 -u run_baselines.py outputs/synthetic --psi-map mirror --out outputs/baselines_full2
+
+# 5) 본 문서의 표/CI를 그대로 재현하려면 outputs/baselines_full2/per_traj.csv를
+#    pandas로 읽어 method별 groupby(mean)과 paired bootstrap(5000회, trajectory
+#    단위로 짝지어 리샘플)을 수행 (분석 스크립트는 share/sim/analyze_canonical.py,
+#    share/sim/analyze_r3_noise.py 참고; 본 result.txt 전용 통합 스크립트는 아직
+#    별도 파일로 커밋하지 않았음 — NOT MEASURED/미작성 항목으로 남김)
+
+
+--------------------------------------------------------------------------------
+10. GitHub 정보
+--------------------------------------------------------------------------------
+
+변경된 파일 (이번 2026-11-14 작업 전체, bbf5741 이후):
+  - share/sim/canonical.py                         (신규)
+  - share/sim/baselines.py                         (B7-canonical, P-canonical 추가)
+  - share/sim/run_baselines.py                     (신규 지표 다수 추가, targets/run/metrics 시그니처 확장)
+  - share/sim/tests/test_canonical.py               (신규, 8개 테스트)
+  - share/sim/tests/test_baselines.py               (신규 시그니처에 맞춰 갱신)
+  - share/sim/analyze_canonical.py                  (신규)
+  - share/sim/analyze_r3_noise.py                   (신규)
+  - share/11.14_exp/EX04_joint_consistency_results.md (신규, canonical 1차 보고서)
+  - share/11.14_exp/canonical_summary.csv/.md, canonical_branch_ambiguity.json, canonical_config.json (신규)
+  - share/11.14_exp/r3_noise_summary.csv            (신규)
+  - share/11.14_exp/2026-11-14_log.txt, 2026-11-14_EX04_joint_angle_consistency_CLAUDE_CODE_PROMPT.md (파일명 수정)
+  - result.txt                                      (본 문서, 저장소 최상위, 신규)
+
+브랜치: feat/ex04-canonical-solver
+로컬 커밋 SHA (result.txt 포함, 최신): ab75d0e
+
+Push 상태: 실패 (재확인함). `git push -u origin feat/ex04-canonical-solver` 실행 시
+이번에도 동일한 오류로 실패:
+  "git: 'credential-manager' is not a git command."
+  "fatal: could not read Username for 'https://github.com': No such device or address"
+원인: `git config --get credential.helper`가 `manager`를 가리키지만 이 비대화형
+환경에는 해당 자격증명 바이너리가 설치되어 있지 않고, 다른 인증 수단(토큰/SSH 키 등)도
+설정되어 있지 않음. 즉, 코드/테스트/분석/본 result.txt는 모두 로컬 브랜치
+feat/ex04-canonical-solver (커밋 ab75d0e)에 정상적으로 존재하지만, 원격(origin)에는
+아직 올라가지 않았음 — "push 성공"이라고 말할 수 없으므로 그렇게 보고하지 않음.
+사용자가 `! gh auth login` 또는 PAT/SSH 키를 설정해주면 재시도 가능.
