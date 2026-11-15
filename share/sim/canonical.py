@@ -58,7 +58,17 @@ def _branches_at(m, T, psi, q_home):
     return out
 
 
-def canonical_feasible_map(m, T, mu_psi, q_home, psi_grid=PSI_GRID):
+def _grid_for(psi_grid_deg):
+    """Build a PSI_GRID-shaped grid at an arbitrary step size. `psi_grid_deg=None` reproduces the
+    module default (GRID_DEG) -- grid resolution is otherwise read per-call, not fixed at import
+    time, so the same process can compare several grid resolutions (EX04 grid ablation) without
+    restarting workers."""
+    if psi_grid_deg is None:
+        return PSI_GRID
+    return np.deg2rad(np.arange(-180.0, 180.0, float(psi_grid_deg)))
+
+
+def canonical_feasible_map(m, T, mu_psi, q_home, psi_grid=None, psi_grid_deg=None):
     """Deterministic canonical target for wrist pose T and belief psi mean mu_psi (nan if the
     belief's psi is undefined). No q_prev, no RNG: same (m, T, mu_psi, q_home) always returns
     the same CanonicalTarget (R1). Candidate psi order = direct mu_psi first, then the grid
@@ -68,6 +78,8 @@ def canonical_feasible_map(m, T, mu_psi, q_home, psi_grid=PSI_GRID):
     04_proposed_solver.md's "cost tolerance bucket -> preset branch priority -> home distance ->
     q lexicographic", collapsed here since all evaluated branches already share the same psi
     cost term -- see module docstring)."""
+    if psi_grid is None:
+        psi_grid = _grid_for(psi_grid_deg)
     order = [mu_psi] if np.isfinite(mu_psi) else []
     order += list(psi_grid[np.argsort(np.abs(k.wrap(psi_grid - mu_psi)))] if np.isfinite(mu_psi) else psi_grid)
     for psi in order:

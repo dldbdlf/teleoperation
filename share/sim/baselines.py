@@ -581,13 +581,16 @@ class BeliefCanonicalIK(Method):
     name = "B7-canonical"
     TAU = 0.05  # UNTUNED: fixed execution time constant
 
+    def __init__(self, psi_grid_deg=None):
+        self.psi_grid_deg = psi_grid_deg  # None -> canonical.py's GRID_DEG default (grid ablation hook)
+
     def reset(self, m, q0):
         super().reset(m, q0)
         self.q_track, self.target = q0.copy(), None
 
     def update(self, f, q):
         T = tool_pose(self.m, f.b_W, f.b_R)
-        self.target = can.canonical_feasible_map(self.m, T, f.b_psi, k.READY)
+        self.target = can.canonical_feasible_map(self.m, T, f.b_psi, k.READY, psi_grid_deg=self.psi_grid_deg)
 
     def step(self, q, dt):
         if self.target is None:
@@ -611,13 +614,16 @@ class FeasibleMAPCanonical(Method):
     TAU0 = 0.05
     SIGMA0_POS = 0.015
 
+    def __init__(self, psi_grid_deg=None):
+        self.psi_grid_deg = psi_grid_deg  # None -> canonical.py's GRID_DEG default (grid ablation hook)
+
     def reset(self, m, q0):
         super().reset(m, q0)
         self.q_track, self.target, self.tau = q0.copy(), None, self.TAU0
 
     def update(self, f, q):
         T = tool_pose(self.m, f.b_W, f.b_R)
-        self.target = can.canonical_feasible_map(self.m, T, f.b_psi, k.READY)
+        self.target = can.canonical_feasible_map(self.m, T, f.b_psi, k.READY, psi_grid_deg=self.psi_grid_deg)
         sp = np.sqrt(f.b_cov[0, 0])
         self.tau = self.TAU0 * max(1.0, (sp / self.SIGMA0_POS) ** 2)
 
