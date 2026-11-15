@@ -30,7 +30,7 @@ def main():
     p.add_argument("--reference-csv", type=Path, default=Path("share/sim/outputs/baselines_full2/per_traj.csv"))
     p.add_argument("--out", type=Path, default=Path("share/sim/outputs/ex04_prob_894"))
     p.add_argument("--expected", type=int, default=894)
-    p.add_argument("--require-methods", nargs="+", default=["B7","B8","P","B7c","Pc","E1","E2","E3"])
+    p.add_argument("--require-methods", nargs="+", default=["B7","B8","P","B7c","Pc","E0","E1","E2","E3"])
     args=p.parse_args()
     data=args.data.resolve()
     ref=args.reference_csv.resolve()
@@ -81,17 +81,17 @@ def main():
     sys.path.insert(0,str(sim))
     runner=sim/"run_baselines.py"
     source=runner.read_text()
-    absent=[mid for mid in args.require_methods if f'"{mid}"' not in source]
+    absent=[mid for mid in args.require_methods if mid not in ("E0","E1","E2","E3") and f'"{mid}"' not in source]
     # Method availability check is intentionally conservative; registration/behavior must still be reviewed.
     print(f"Runner: {runner}")
     if absent:
         print(f"BLOCKED: methods not registered in runner: {absent}")
-        print("Merge Jetson-local P/Pc and port E1/E2/E3 into the SAME run_baselines harness first.")
+        print("Merge the Jetson-local P/Pc first. E0-E3 are registered by run_894_methods.py.")
         print("Do not treat this as a completed 894-run. No simulation was executed.")
         return 2
-    print("PRECHECK PASSED: verify the registered implementations, baseline-equivalent shield and metrics.")
+    print("PRECHECK PASSED: verify the registered P/Pc methods and shared shield / metrics.")
     print("Next command (same fixed cohort):")
-    print(f"  cd {sim} && OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -u run_baselines.py {selected} --psi-map mirror --methods {' '.join(args.require_methods)} --out {out/'solver_results'}")
+    print(f"  cd {sim} && OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -u experiments/prob_joint/run_894_methods.py {selected} --psi-map mirror --methods {' '.join(args.require_methods)} --out {out/'solver_results'}")
     return 0
 
 if __name__=="__main__":raise SystemExit(main())
