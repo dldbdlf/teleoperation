@@ -113,6 +113,8 @@ IV. 반드시 지켜야 하는 해석 제한
 ------------------------------
 1. E0~E3는 이번 exploratory 구현이다. 2026-11-14 result.txt의
    실제 P/Pc 코드와 다르며 full 894-trajectory 재검증 결과가 아니다.
+   업데이트: GitHub main에 P/B7c/Pc와 canonical.py가 병합됐음을 확인했지만,
+   full2 원본 894-trajectory CSV/NPZ는 원격에 없다.
 2. 고정 손목 실험의 wrist error는 controller가 branch switching으로
    목표 위치에 얼마나 접근하는지 보는 지표임.
 3. 'recovery requested jump'는 관절 실행 명령의 즉시 점프가 아니라
@@ -144,7 +146,7 @@ OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
 VI. Jetson에서 해야 하는 *별개* 전체 EX04 실험
 ----------------------------------------------
 - 전체 894개의 원본 synthetic npz 및 full2 historical reference CSV 확인.
-- unpushed local feat/ex04-canonical-solver의 P/Pc 코드를 손실 없이 보존.
+- 현재 GitHub main에 병합된 P/Pc 코드와 Jetson 로컬 수정사항을 모두 손실 없이 보존.
 - GitHub main에 있는 prob_joint의 신규 method wrapper와 병합.
 - 공유 shield, 동일 894개의 원본 seed/psi map/camera rate/hold 설정에서
   P/Pc/B7/B8/E1/E2/E3를 실제 실행; R1-R6, S1-S6 구간, 10/15/20deg grid.
