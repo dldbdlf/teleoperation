@@ -1,0 +1,147 @@
+================================================================================
+2026-11-15 | NERO 7-DoF probabilistic joint-branch solver: 실제 실행 결과
+================================================================================
+
+판정: PARTIAL. 확률적 관절 분포 모델은 구현·실험 가능하지만 E1(비확률
+Branch-Aware Tracking)보다 일관되게 우수하다는 증거는 없다.
+실행 환경: 이 ChatGPT 세션의 Linux x86_64 CPU, Python 3.13.5, NumPy 2.3.5.
+Jetson / AGILEX NERO 실물 명령은 실행하지 않았다.
+
+I. 사용한 소스 및 공통 조건
+-------------------------
+- GitHub main NERO analytic IK의 사본: nero_kin.py.
+- heldout_ablation.py 및 dynamic_wrist_ablation.py (동일 폴더).
+- 모든 방법은 동일한 episode별 입력, feasible IK candidate bank,
+  관절 범위, 100Hz discrete update 및 joint speed cap pi rad/s.
+- E0: canonical posterior MAP IK, previous-q 무관한 기준해 그대로 추적
+- E1: 기준해는 보존, 실제 branch 선택에 joint continuity penalty 적용
+- E2: categorical joint candidate probability + entropy-adaptive switching penalty
+- E3: E2 후보분포를 시간적 Markov filter와 연계
+- 확률은 heuristic/미보정이며, 실제 인간 자세 posterior의 calibration 아님.
+- 결과는 초당 15프레임 가상 관측. 센서 이미지, ROS2, 모터 응답, 충돌 없음.
+- IC: IK -> FK round-trip: 30/30 random positions, max matrix Frobenius
+  error 3.155099787e-7. 행렬 요소는 위치[m]와 무차원 회전이 섞여 있음.
+
+II. 독립 Seed 검증: 고정 손목 / 움직이는 psi (완료)
+------------------------------------------------
+seed=19231..19290 (이전 탐색 seed 9131..9190과 중복 없음)
+각 격자별 60 episodes × 72 frames × 4 methods; 총 180 episode,
+720 method-episode, 51,840 method-frame.
+ψ grids: 10, 15, 20deg. Dropout: 18 frames ~= 1.2s.
+표의 값은 각 episode 내 percentile/metric을 계산 후 60개 평균한 값.
+Wrist P95는 episode P95들의 평균, pooled overall P95 아님.
+
+grid | method | Wrist P95 mm | psi P90 deg | jerk RMS | recovery requested joint jump deg | >60deg target jumps/episode
+10   | E0     | 195.27 | 47.97 | 18064.74 | 125.22 | 19.93
+10   | E1     |  66.49 | 31.25 | 12530.16 |  55.11 |  3.25
+10   | E2     |  57.78 | 28.09 | 11442.97 |  52.12 |  2.53
+10   | E3     | 108.14 | 39.35 | 12514.60 |  67.30 |  2.68
+15   | E0     | 205.63 | 53.17 | 17059.06 | 125.16 | 19.52
+15   | E1     |  68.74 | 34.09 | 11533.12 |  62.92 |  4.10
+15   | E2     |  70.32 | 31.99 | 11370.10 |  63.32 |  4.18
+15   | E3     | 109.83 | 41.88 | 10589.28 |  67.99 |  2.78
+20   | E0     | 191.07 | 50.75 | 16847.90 | 123.54 | 20.00
+20   | E1     |  77.41 | 30.16 | 11023.58 |  62.56 |  4.23
+20   | E2     |  82.20 | 29.47 | 11333.12 |  63.39 |  4.75
+20   | E3     | 113.22 | 41.16 |  9762.85 |  72.69 |  3.20
+
+각 에피소드에서 동일 belief 100회 반복한 canonical index 최대 차이: 0.
+이 검사는 저장된 동일 후보집합에 대해 동일 프로세스 내 반복한 것이며
+기존 R1/R2 및 프로세스 재시작/다른 장비간 동등성의 대체는 아님.
+
+쌍별 episode bootstrap (3000 resamples, 95% CI; delta = first - second):
+[10deg E2-E1]
+ wrist P95 -8.71 mm CI[-14.54,-3.32]  (E2 개선)
+ psi P90   -3.16deg CI[-5.90,-0.96]  (E2 개선)
+ jerk RMS  -1087   CI[-1552,-679]   (E2 개선)
+ recovery  -3.00deg CI[-7.62,+1.41] (불확실)
+[15deg E2-E1]
+ wrist P95 +1.58 mm CI[-0.45,+4.23] (불확실)
+ psi P90   -2.10deg CI[-4.11,-0.30] (E2 개선)
+ recovery  +0.40deg CI[-0.55,+1.60] (불확실)
+[20deg E2-E1]
+ wrist P95 +4.79 mm CI[+0.99,+9.48] (E2 악화)
+ jerk RMS  +310 CI[+112,+516]      (E2 악화)
+ >60deg jumps +0.52 CI[+0.12,+0.88] (E2 악화)
+
+=> E1 vs E0에서는 세 격자 모두 개선. E2의 이득은 10deg에서만 다지표
+동시에 나타나며, 20deg에서는 악화. 추가 확률모델의 독립적, 일관된
+일반화 이득은 아직 입증되지 않음. 전이 posterior E3는 목표 점프 빈도와
+jerk를 일부 줄이지만 wrist/psi/recovery 오차가 전반적으로 증가.
+
+III. 동적 손목 가림 스트레스 테스트 (완료)
+---------------------------------------
+seed=39231..39262, 32 episodes × 30 frames × 4 methods
+=128 method-episode, 3,840 method-frame.
+ψ grid=20deg, wrist SE(3)는 각 프레임에서 smooth motion; occlusion 약 0.67s 동안
+마지막 관측 wrist pose 유지. ψ belief는 occlusion 중 sigma 60deg 및 random drift.
+공통 관절 속도제한 pi rad/s. 32개 episode 평균:
+
+방법 | wrist P95 mm | orientation P95 deg | psi P90 deg | recovery requested jump deg | jerk RMS | >60deg jumps
+E0 | 163.79 | 43.42 | 30.62 | 129.47 | 16631.26 | 8.75
+E1 |  56.72 | 13.94 | 16.92 |  61.44 | 12695.67 | 2.16
+E2 |  62.49 | 14.79 | 15.22 |  64.58 | 13061.48 | 2.66
+E3 |  92.25 | 21.42 | 20.45 |  68.03 | 11728.00 | 1.63
+
+32-episode paired bootstrap 95% CI (5000 resamples, first-second):
+ E1-E0 wrist  -107.06 mm CI[-151.22,-67.63]
+ E1-E0 psi    -13.70 deg CI[-24.68,-4.53]
+ E1-E0 jerk   -3935.59   CI[-4611.03,-3269.34]
+ E1-E0 recovery -68.03deg CI[-82.30,-53.88]
+ E2-E1 wrist   +5.77 mm CI[+1.85,+10.95] (E2 악화)
+ E2-E1 psi     -1.71deg CI[-3.74,-0.09]  (E2 소폭 개선)
+ E2-E1 jerk    +365.81 CI[+113.36,+664.31] (E2 악화)
+ E2-E1 recovery +3.14deg CI[+0.23,+8.04] (E2 악화)
+ E3-E1 wrist  +35.53 mm CI[+13.38,+58.90] (E3 악화)
+ E3-E1 psi     +3.53deg CI[+0.61,+7.59] (E3 악화)
+
+관찰: E1이 손목 위치/방향과 복귀 목표 점프에서 가장 좋음.
+E2가 ψ를 조금 개선하였으나 손목과 복귀를 희생함.
+E3가 jerk 및 큰 목표 점프 횟수에서는 유리하지만 정확도 희생이 큼.
+
+IV. 반드시 지켜야 하는 해석 제한
+------------------------------
+1. E0~E3는 이번 exploratory 구현이다. 2026-11-14 result.txt의
+   실제 P/Pc 코드와 다르며 full 894-trajectory 재검증 결과가 아니다.
+2. 고정 손목 실험의 wrist error는 controller가 branch switching으로
+   목표 위치에 얼마나 접근하는지 보는 지표임.
+3. 'recovery requested jump'는 관절 실행 명령의 즉시 점프가 아니라
+   speed cap 이전 목표 IK 각도 사이의 최대 변화. 실제 로봇 충격을
+   그대로 나타내지 않는다.
+4. 후보 bank 생성 시간/실측 CPU 처리율은 여기서 Jetson 검증되지 않았다.
+   온라인 D415+ROS2 실시간성 및 100Hz deadline은 미입증.
+5. 잠재적인 노이즈/occlusion model은 합성이고 실제 calibrated 확률
+   분포가 아니다. Test data를 통한 후속 튜닝은 별도 held-out set 사용.
+6. 관절한계/속도제약만 적용함; 충돌, 가속도/토크 한계, 실물 안전성 미검증.
+7. 결과 중 95% CI는 synthetic episode별 paired bootstrap;
+   실제 인간 사용자의 subject-level 일반화는 검증하지 않았다.
+8. 기술적으로 다른 psi grid에서 IK feasible candidate support도 바뀌므로
+   '확률이 항상 유효/무효'와 같은 보편적 결론은 부적절함.
+
+V. 재현 명령
+-----------
+cd share/sim/experiments/prob_joint
+python3 -m pip install numpy scipy
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  python3 nero_kin.py
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  python3 heldout_ablation.py --seed-start 19231 --episodes 60 --frames 72 \
+    --grids 10 15 20 --bootstrap 3000 --out heldout_v1
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  python3 dynamic_wrist_ablation.py --seed-start 39231 --episodes 32 \
+    --frames 30 --grid 20 --out dynamic_v1
+
+VI. Jetson에서 해야 하는 *별개* 전체 EX04 실험
+----------------------------------------------
+- 전체 894개의 원본 synthetic npz 및 full2 historical reference CSV 확인.
+- unpushed local feat/ex04-canonical-solver의 P/Pc 코드를 손실 없이 보존.
+- GitHub main에 있는 prob_joint의 신규 method wrapper와 병합.
+- 공유 shield, 동일 894개의 원본 seed/psi map/camera rate/hold 설정에서
+  P/Pc/B7/B8/E1/E2/E3를 실제 실행; R1-R6, S1-S6 구간, 10/15/20deg grid.
+- Jetson에서 후보 bank 생성까지 포함한 실제 p95/p99 계산시간과 deadline miss.
+- 실제 D415와 실물 NERO는 EX05/EX08 별도 안전 검증 이후.
+- 상세 실행 절차: REVALIDATE_894_KO.md. 894 실험은 이번 GitHub 실행에서 수행되지 않음.
+
+결론: 다음 최선 후보는 E1; 확률모델 E2는 conditional ablation으로 유지.
+E2가 더 좋다는 주장은 사전등록 목표와 별도 heldout/실제 시계열 검증 필요.
+================================================================================
