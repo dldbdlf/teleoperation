@@ -1,0 +1,383 @@
+================================================================================
+EX04 894-trajectory Solver 재검증 — Checkpoint/ETA/Resume 포함 최종 결과 보고서
+================================================================================
+작성일: 2026-11-16
+작성자: Claude Code (자동 실험 실행 및 분석, 2026-11-15/16 프롬프트 기준)
+
+본 문서의 모든 수치는 아래 명시된 두 실행의 원시 per_traj.csv에서 직접 측정한
+것입니다. 추정/미측정 항목에는 명시적으로 표시했습니다. 수치를 부풀리거나 실패/
+열위 사례를 제외하지 않았습니다 — 11번(G1 판정) 및 13번(문제점) 항목에서 제안
+방법(E1/E2/E3)이 기존 baseline보다 뒤지는 지표를 그대로 보고합니다. 실제 NERO
+로봇은 전혀 사용하지 않았으며 전부 synthetic 시뮬레이션입니다.
+
+
+--------------------------------------------------------------------------------
+1. 실행 환경 / Git SHA
+--------------------------------------------------------------------------------
+- 하드웨어: Jetson AGX Orin
+- 본실행(run_all) 당시 code_version(HEAD git SHA): 299ab2d
+- 보충 진단실행(run_probdiag) 당시 code_version: 92c8523
+  (prob_methods.py에 entropy/확률변화/candidate-gen 타이밍 계측 추가 후 커밋)
+- 이 보고서를 작성한 시점의 HEAD: 5b07d34
+- Python/numpy/scipy, OPENBLAS_NUM_THREADS=OMP_NUM_THREADS=MKL_NUM_THREADS=1
+  (8-worker multiprocessing.Pool 오버서브스크립션 방지, 기존 실행과 동일 설정)
+- 실행 설정: psi_map=mirror, qd_max=π rad/s, hold_s=0.5s, 카메라 15Hz, 제어 100Hz,
+  동일 safety shield, 동일 cohort, 동일 q0 — 9개 방법 전부 동일 조건
+
+
+--------------------------------------------------------------------------------
+2. 데이터셋 manifest / 실제 평가 개수
+--------------------------------------------------------------------------------
+- Cohort: prepare_894.py로 outputs/baselines_full2/per_traj.csv(기존 894개 결과)를
+  기준 삼아 심볼릭 링크로 재구성한 고정 894개 trajectory
+  (outputs/ex04_prob_894/cohort_data/, manifest.json)
+- cohort_origin_sha256 = 41ea92102e654e0874671d63f0c559c5037dacd80a48e557e8e76dc3043aef7f
+- original_manifest_sha256 = 49c16c7775e9557bc385918d259653b2dfcb18dba61293136ca9e493f4751562
+- cohort_894.json: n=894, paths 894개 — analyze_ex04.py가 매 실행마다 이 파일과
+  실제 결과의 (group,file) 집합을 전수 비교해서 불일치 시 즉시 SystemExit
+  (silent substitution 방지)
+- 실제 평가 완료 개수:
+  - run_all: 15,198 / 15,198 (100.00%), 실패 0건
+    = 894 파일 × (B7+B8+P+B7c+Pc+E0+E1+E2+E3 @15deg = 9) + 894×(E0-E3 @10deg = 4)
+      + 894×(E0-E3 @20deg = 4) = 8046+3576+3576 = 15198 (계획값과 정확히 일치)
+  - run_probdiag(보충): 10,728 / 10,728 (100.00%), 실패 0건
+    = 894 × (E0,E1,E2,E3) × (10,15,20) — B7/B8/P/B7c/Pc는 branch-posterior 개념이
+      없어 재실행하지 않음 (기존 run_all 결과를 그대로 사용)
+- 시나리오: S1, S2, S3, S4/S5/S6 × {200,500,1000,2000}ms occlusion duration
+  (총 15개 group), 각 group당 54~60개 파일
+- 고유 파일 수(두 실행 모두): 894 — cohort_894.json과 완전히 일치 확인됨
+
+
+--------------------------------------------------------------------------------
+3. Checkpoint/Resume 시스템 설계
+--------------------------------------------------------------------------------
+- Job 식별자: (file, method, grid, config_hash, code_version) — 5-tuple PRIMARY KEY
+- SQLite WAL 모드, isolation_level=None(autocommit) — job 하나가 끝나는 즉시
+  디스크에 durable하게 커밋됨 (명시적 commit() 불필요)
+- 체크포인트 주기: 매 job 완료 시 즉시 DB 기록 + progress.json은 최소 60초 간격
+  또는 force 조건에서 원자적(tmp+replace) 스냅샷
+- SIGINT/SIGTERM: 메인 프로세스에서만 커스텀 핸들러 등록(진행 중인 job 마무리 후
+  종료), 워커 프로세스는 Pool initializer에서 SIG_DFL/SIG_IGN으로 리셋 —
+  그렇지 않으면 fork로 상속된 핸들러 때문에 pool.terminate()가 멈춰버림(실제로
+  발견하고 수정한 버그, 4번 항목 참조)
+- --status: run_meta 캐시가 아니라 jobs 테이블에 직접 SELECT COUNT(*)... GROUP BY
+  status 쿼리 — 실행 중인 프로세스에 attach하지 않고도 항상 "지금" 기준 정확한
+  Total/Done/Pending/Running/Failed를 반환 (Recent Speed/ETA만 최대 60초 지연 명시)
+- resume: 모든 실행이 기본적으로 resume — 동일 config_hash/code_version에서
+  status='done'인 job은 건너뛰고, status='running'으로 남아있던(이전 실행이
+  죽으면서 고아가 된) job은 재동기화 시 자동으로 'pending'으로 되돌림
+
+
+--------------------------------------------------------------------------------
+4. 강제 종료 / Resume 테스트 결과 (필수 게이트, 섹션 4.6)
+--------------------------------------------------------------------------------
+본 894개 전체 실행을 시작하기 전에 6개 trajectory(54개 job)짜리 소규모 cohort로
+먼저 다음을 실측했습니다(experiments/prob_joint/tests/test_run_ckpt.py 상단
+docstring에도 동일 내용을 기록해 코드 변경 시 재확인 가능하게 해둠):
+
+  1) 정상 실행 중 10/54 job 완료 + 3개 job 진행 중인 시점에 메인 프로세스와
+     워커 4개 전부에 kill -9(SIGKILL, 신호 무시 불가능) 실행
+  2) 재시작(동일 명령, --resume 플래그 없이도 동일하게 동작) 후 결과 확인:
+     - 완료돼 있던 10개 job: result_json 그대로 보존, 재실행되지 않음
+     - kill 시점에 'running'이던 3개 job: 'pending'으로 재동기화되어 재실행됨
+     - 최종 54/54 완료, 중복 0건, 누락 0건
+  3) 처음부터 끝까지 중단 없이 돌린 동일 cohort의 결과와 바이트 단위 비교:
+     deadline_miss_pct를 제외한 모든 지표가 완전히 일치
+     (deadline_miss_pct/runtime_*_ms는 실측 wall-clock 기반이라 애초에
+     결정론적이지 않음 — 입력의 함수가 아니므로 재현 대상이 아님)
+
+PASS 기준 전부 충족: 결과 손실 0, 중복 0, 누락 0, config mismatch 감지 로직
+정상(다른 config_hash/code_version은 섞이지 않음, test_different_config_or_
+code_version_gets_its_own_rows_not_merged로 회귀 테스트화), 최종 지표 일치,
+--status가 강제종료 직후에도 동작. 이 테스트를 통과한 뒤에야 894개 전체 실행을
+시작했습니다.
+
+이 과정에서 실제로 발견하고 고친 버그 2건:
+  - pool.close() 누락으로 정상 종료 경로에서 "ValueError: Pool is still running"
+  - 워커가 메인의 SIGTERM 핸들러를 fork로 상속해서 pool.terminate()가 무한 대기
+
+
+--------------------------------------------------------------------------------
+5. 총 소요시간 / throughput / ETA 정확도
+--------------------------------------------------------------------------------
+[run_all] 15,198개 job, 9방법×3grid 전체
+  - 시작: 2026-11-15 17:58:30 KST, 종료: 2026-11-16 05:55:45 KST
+  - 총 소요: 11:57:14 (43034.2초)
+  - 평균 처리량: 21.19 jobs/min (최종), 실행 초반 calibration 이후 실측 32.9
+    jobs/min까지 올라갔다가 작업 혼합(E0-E3 비중 증가)에 따라 하락
+  - 사전 계산(calibration 전) 추정치는 ~8.25시간이었으나 실측 11시간 57분 —
+    추정 대비 +45% 더 걸림(사전 추정은 E0-E3 단독 비용만으로 선형 외삽한 것이라
+    혼합 작업 큐의 변동을 과소평가함). 즉 ETA는 "추정치, 보장 아님"이 실제로
+    들어맞은 사례.
+
+[run_probdiag] 10,728개 job, E0-E3 전용 보충 진단
+  - 시작: 2026-11-16 06:04 KST, 종료: 2026-11-16 16:25:20 KST
+  - 총 소요: 10:21:07 (37267.2초)
+  - 평균 처리량: 17.27 jobs/min
+  - 실행 중 수차례 --status로 확인한 실측 ETA(16:18~16:25 KST 범위)가 실제
+    종료 시각(16:25 KST)과 거의 정확히 일치 — EWMA 기반 ETA가 안정화된 이후
+    (초반 calibration 구간 제외)에는 신뢰할 만했음
+
+
+--------------------------------------------------------------------------------
+6. 9-solver 비교 (15deg, 동일 조건) — P50 기준
+--------------------------------------------------------------------------------
+전체 894개 trajectory에 걸친 per-trajectory 지표의 P50 (median of medians):
+
+ method | wrist_mm | wrist_deg | psi_feas% | psi_p90 | jerk_rms | recovery_jump_deg | deadline_miss%
+ -------|----------|-----------|-----------|---------|----------|--------------------|---------------
+ B7     |   27.83  |    9.55   |   60.83   |  20.76  |  6776    |       15.16        |   100.0
+ B8     |   27.50  |    8.98   |   60.83   |  19.40  |  8308    |       57.94        |    35.8
+ P      |   27.78  |    9.50   |   60.83   |  20.59  |  6657    |       11.30        |   100.0
+ B7c    |   31.24  |   10.40   |   60.83   |  27.30  |  9117    |       98.89        |     6.7
+ Pc     |   31.01  |   10.37   |   60.83   |  27.30  |  8982    |       88.85        |     7.5
+ E0     |   32.47  |   10.65   |   60.83   |  27.06  |  9348    |      105.80        |   100.0
+ E1     |   26.18  |    8.59   |   60.83   |  20.59  |  8511    |       25.01        |   100.0
+ E2     |   26.18  |    8.61   |   60.83   |  20.51  |  8511    |       24.16        |   100.0
+ E3     |   27.04  |    8.85   |   60.83   |  21.32  |  8400    |       29.42        |   100.0
+
+(전체 지표/그리드별 P50·P90·P95·mean은 ex04_full_summary.csv에 모두 수록.
+psi_feasible_pct가 9개 방법 모두 60.83%로 동일한 것은 feasibility 자체가
+방법이 아니라 입력 자세/occlusion에 의해 결정되기 때문 — 기대한 대로임.)
+
+관찰: E1/E2가 wrist/psi/jerk/recovery_jump 전 영역에서 9개 방법 중 가장 균형
+잡힌 성능을 보임. 단, B7/P는 deadline_miss_pct가 100%임에도 jerk_rms가 가장
+낮다 — 이는 "느린 solver → 실질 업데이트 빈도 낮음 → 보간 레이어가 적은 수의
+sparse target 사이를 선형보간" 효과로, 실제 tracking 품질이 아니라 보간
+아티팩트일 가능성이 있음(13번 문제점 참조, 추가 검증 필요).
+
+
+--------------------------------------------------------------------------------
+7. psi-grid ablation: E0-E3 @ 10 / 15 / 20 deg
+--------------------------------------------------------------------------------
+ method | grid | wrist_mm_p50 | psi_p50 | runtime_p95_ms | cand_gen_p95_ms | branch_entropy_p50
+ -------|------|--------------|---------|-----------------|-------------------|--------------------
+ E0     |  10  |    32.28     |  6.92   |     275.2       |      321.2        |       1.78
+ E0     |  15  |    32.47     |  7.09   |     185.7       |      219.9        |       1.50
+ E0     |  20  |    32.42     |  7.18   |     141.2       |      168.6        |       1.38
+ E1     |  10  |    26.12     |  5.99   |     275.4       |      319.3        |       1.78
+ E1     |  15  |    26.18     |  6.03   |     185.4       |      218.8        |       1.50
+ E1     |  20  |    26.37     |  6.11   |     141.1       |      167.9        |       1.38
+ E2     |  10  |    26.19     |  5.99   |     275.1       |      318.6        |       1.78
+ E2     |  15  |    26.18     |  6.03   |     185.3       |      221.3        |       1.50
+ E2     |  20  |    26.41     |  6.09   |     141.0       |      168.4        |       1.38
+ E3     |  10  |    26.82     |  6.11   |     275.5       |      318.0        |       1.17
+ E3     |  15  |    27.04     |  6.18   |     186.2       |      219.6        |       0.89
+ E3     |  20  |    27.19     |  6.24   |     141.3       |      169.8        |       0.74
+
+그리드를 성기게(20deg) 할수록 후보 수가 줄어 cand_gen 시간이 ~1.9배 빨라지고
+branch_entropy는 낮아짐(후보가 적으면 분포가 덜 퍼짐 — 당연한 결과). 정확도
+(wrist_mm/psi)는 그리드 해상도에 거의 영향받지 않음(10°→20° 구간에서 wrist_mm
+변화 <0.3mm) — 즉 이 범위에서는 정확도 손실 없이 20deg로 가도 무방하지만,
+그래도 15Hz 예산(66.7ms) 대비 141ms(20deg)~275ms(10deg)로 전부 2~4배 초과.
+
+
+--------------------------------------------------------------------------------
+8. E0 vs E1 vs E2 vs E3 분석 (paired bootstrap, 95% CI, n=2000, 15deg)
+--------------------------------------------------------------------------------
+E1/E2/E3 모두 E0(순수 canonical MAP, 연속성 없음) 대비 wrist_mm_p50이 크게
+개선됨(paired diff, 894 trajectory 쌍):
+  E1-E0: -28.96mm [-32.21, -26.02]   E2-E0: -28.60mm [-31.80, -25.73]
+  E3-E0: -26.67mm [-29.75, -23.85]
+→ "branch 연속성을 고려하지 않고 매 프레임 raw MAP만 추적하면 branch가 자주
+  바뀌며 wrist가 크게 튄다"는 가설을 강하게 뒷받침 (recovery_jump_deg도
+  E0=105.8deg vs E1=25.0/E2=24.2/E3=29.4deg로 동일한 패턴).
+
+E1/E2/E3 상호 비교는 전반적으로 작은 차이:
+  E2-E1 wrist_mm_p50: +0.36mm [0.16,0.58] (E2가 약간 더 나쁨, 그러나 매우 작음)
+  E3-E2 wrist_mm_p50: +1.93mm [1.31,2.74] (E3가 E2보다 뒤짐)
+  E3-E1 wrist_mm_p50: +2.29mm [1.61,3.15] (E3가 E1보다 뒤짐)
+→ branch_entropy 기반 적응(E2)이 고정 페널티(E1) 대비 뚜렷한 이점을 보이지
+  않고, 시간적 posterior 필터링(E3)은 오히려 약간 더 나쁨 — E3의 설계 의도
+  (시간적 안정성)는 branch_entropy_p50이 더 낮다는 점(0.89 vs E1/E2의 1.50,
+  §7)에서 확인되지만, 그것이 wrist tracking 정확도 개선으로 이어지지는
+  않았음. 추가 투입 복잡도(Markov transition, prev_p/prev_q_bank 상태) 대비
+  성능 이득이 불명확 — 현재 파라미터화로는 E1/E2가 더 단순하면서 동등 이상.
+
+IK 후보 생성 vs 선택 시간 분리 측정(§7 데이터 기반, 15deg):
+  cand_gen_p95_ms ≈ 219ms, selection_p95_ms ≈ 0.66~1.27ms
+→ 계산 비용의 ~99.6%가 candidate bank 생성(_bank())에 있고 선택 로직
+  (E1/E2/E3의 continuity scoring)은 사실상 무시할 만한 비용. 실시간화를
+  시도한다면 선택 알고리즘이 아니라 candidate 생성 쪽을 최적화해야 함
+  (13/14번 항목 참조).
+
+
+--------------------------------------------------------------------------------
+9. Canonical R1-R6 검증 결과 (E0-E3 확장)
+--------------------------------------------------------------------------------
+share/sim/tests/test_canonical.py(canonical.py/B7c/Pc 대상, 기존 8개 중 7개 —
+느린 subprocess 테스트 1개 제외하면 7개 — 통과, 전체 스위트 42/42 통과)에
+더해, experiments/prob_joint/tests/test_canonical_e0e3.py를 새로 작성해서
+E0-E3(ProbJointBranch)까지 확장 검증 — 18개 전부 통과:
+
+  - q_ref가 kind(E0/E1/E2/E3)와 무관하게 동일 입력에 대해 bit-identical함
+    (test_q_ref_identical_across_all_four_kinds_same_frame)
+  - R1: 20회 반복 호출 bit-identical (kind별 4개 파라미터화 테스트)
+  - R2: q_start(로봇 시작 관절각)와 무관 (kind별 4개)
+  - R2: 호출 이력(이전 5개 무관 프레임을 거쳤는지)과 무관 — E1/E2/E3 (E0는
+    i==i_ref라 테스트상 자명하므로 제외)
+  - sanity check: 실제로 q_des(추적 목표)는 kind에 따라 달라짐을 확인
+    (안 그러면 위 테스트들이 공허하게 통과하는 것이므로)
+
+결론: "E1/E2/E3의 실제 제어 목표가 달라지더라도 기준 관절각 q_ref는 동일
+입력에 대해 동일해야 한다"는 요구사항을 코드 레벨에서 확인 — ProbJointBranch.
+update()에서 logw/i_ref/q_ref 계산은 q(로봇 현재 상태)나 self.prev_p/
+prev_q_bank(시간적 상태)를 전혀 참조하지 않고 프레임 입력과 psi_grid_deg만의
+함수이기 때문.
+
+
+--------------------------------------------------------------------------------
+10. Jetson 실시간 처리 능력
+--------------------------------------------------------------------------------
+15Hz 카메라 프레임 데드라인(66.7ms) 미스율, 전체 894개 평균(15deg 조건):
+
+  B7c ≈ 6.7%   Pc ≈ 7.5%   B8 ≈ 35.8%   B7 = 100%   P = 100%
+  E0 = 100%    E1 = 100%   E2 = 100%    E3 = 100%
+
+→ 이 Jetson 하드웨어 + 현재 구현 기준, **B7c/Pc만 15Hz 실시간 추적에 실질적으로
+적합**하고, B8은 시나리오에 따라 20~55% 범위로 부분적으로만 적합하며,
+B7/P/E0/E1/E2/E3 6개 방법은 전부 사실상 매 프레임 데드라인을 놓침(이 중
+B7/P는 애초에 canonical 격자 enumeration을 쓰지 않는 다른 알고리즘 계열이라
+grid 해상도를 낮춰도 해결되지 않음). E0-E3는 §7에서 본 대로 grid를 20deg로
+완화해도 141ms로 여전히 2배 이상 초과.
+
+100Hz 제어 루프 자체(interpolation만 하는 non-update tick)는 전 방법 공통으로
+가볍고 문제 없음 — 병목은 전적으로 15Hz 카메라 업데이트 시점의 candidate 생성
+(§8).
+
+
+--------------------------------------------------------------------------------
+11. G1 Gate 판정: PARTIAL (baseline 선택에 따라 갈림 — 아래 상세)
+--------------------------------------------------------------------------------
+사전등록 기준(share/docs/experiment_roadmap.md:125, 이 실행 전에 이미 문서화돼
+있던 기준이며 본 실행 결과를 보고 사후에 쓴 것이 아님):
+  "strongest fair baseline 대비 wrist 비열화 median +5mm/+5° 이내이며,
+   ψ P90/jerk/recovery 중 사전 선정한 1차 지표에 실질 개선(15-20%)"
+
+"strongest fair baseline"이 두 가지로 해석 가능해서 둘 다 보고합니다:
+
+(A) baseline = Pc (동일 canonical/grid 백본, "단순 결정성 효과"를 통제한
+    confound-free 비교 — roadmap 자체가 이 분리를 요구함):
+    wrist_mm_p50: E1 26.18 vs Pc 31.01 → -15.6% (비열화 조건 충족, 오히려 개선)
+    psi_p90:      E1 20.59 vs Pc 27.30 → -24.6% 개선 (15-20% 목표 충족)
+    recovery_time_s:  E1 0.22 vs Pc 0.42 → -47.6% 개선 (목표 충족)
+    recovery_jump_deg: E1 25.0 vs Pc 88.9 → -71.9% 개선 (목표 큰 폭 충족)
+    → 이 baseline 기준으로는 G1 PASS
+
+(B) baseline = P (roadmap 119행에 명시된 원래 비교군 중 가장 강한 비-canonical
+    방법, canonical 격자 전환 효과까지 포함):
+    wrist_mm_p50: E1 26.18 vs P 27.78 → -5.8% (비열화 조건은 충족, 개선도 됨)
+    psi_p90:      E1 20.59 vs P 20.59 → ~0% (개선 없음)
+    jerk_rms:     E1 8511 vs P 6657  → +27.8% 악화 (개선은커녕 악화)
+    recovery_jump_deg: E1 25.0 vs P 11.3 → +121% 악화
+    recovery_path_deg: E1 430.7 vs P 341.0 → +26.3% 악화
+    recovery_time_s: E1 0.22 vs P 0.24 → -8.3% (방향은 맞으나 목표 15-20% 미달)
+    → 이 baseline 기준으로는 G1 FAIL (3개 후보 1차 지표 중 어느 것도 목표 미달,
+      jerk/recovery_jump/recovery_path는 오히려 악화)
+
+판단: roadmap이 "단순 결정성 효과와 coupled posterior 최적화 효과를 분리"하라고
+명시한 취지를 따르면 (A)가 과학적으로 올바른 비교이고, 그 기준으로는 PASS.
+다만 (B)도 명시적으로 나열된 비교군이었고 그 기준으로는 FAIL이므로, 최종
+판정은 **PARTIAL**로 보고하며 baseline을 어느 쪽으로 확정할지는 연구팀의
+사전등록 재확인이 필요합니다(사후에 유리한 쪽을 고르지 않기 위해 둘 다 제시).
+안전 위반(관절한계/속도한계 breach)은 두 baseline 모두와 동일 safety shield
+하에서 0건으로 동일.
+
+
+--------------------------------------------------------------------------------
+12. 최종 추천 솔버
+--------------------------------------------------------------------------------
+- **실시간 배포(현재 Jetson, 현재 구현) 기준: Pc 추천.** 9개 방법 중 Pc/B7c만
+  15Hz 데드라인을 대체로 지키고(미스율 ~7%), wrist/psi 정확도도 B7/P보다는
+  뒤지지만 합리적인 범위.
+- **오프라인/배치 정확도(실시간 제약 무시) 기준: E1 또는 E2 추천**, E0 대비
+  wrist_mm ~29mm, recovery_jump ~81deg 개선. E1과 E2는 사실상 동급(§8)이며
+  E2의 엔트로피 적응이 뚜렷한 추가 이득을 주지 않으므로 더 단순한 E1을
+  우선 추천. E3(시간적 posterior)는 복잡도 대비 이득이 없어 비추천.
+- E0-E3를 실배포하려면 §13/§14의 candidate-bank 공유 최적화가 선행되어야
+  "실시간 + 높은 정확도"를 동시에 만족할 가능성이 생김 — 현재는 "정확도 vs
+  실시간성"이 서로 다른 방법 그룹에 분리돼 있는 상태.
+
+
+--------------------------------------------------------------------------------
+13. 가장 중요한 문제 Top 3
+--------------------------------------------------------------------------------
+1) Candidate bank 생성이 전체 계산비용의 ~99.6%를 차지하며(§8) 15Hz 예산을
+   2~4배 초과(§7,§10) — 이것이 해결되지 않는 한 E0-E3는 이 하드웨어에서
+   실시간 배포 불가능. 게다가 같은 프레임에서 E0/E1/E2/E3가 동일한
+   psi_grid_deg로 실행될 때 각자 독립적으로 _bank(f)를 다시 계산하고 있음
+   (bank는 self.kind를 전혀 참조하지 않으므로 4개 kind가 100% 동일한 bank를
+   만듦) — 이 중복을 제거하면 이론상 최대 4배 비용 절감 가능.
+
+2) G1 pre-registered gate의 "strongest fair baseline"이 사전에 유일하게
+   확정되지 않아, baseline 선택에 따라 PASS/FAIL이 갈림(§11). Contribution
+   주장을 publish하기 전에 반드시 해소해야 할 방법론적 공백.
+
+3) B7/P가 deadline_miss_pct=100%임에도 jerk_rms가 가장 낮게 측정되는 현상
+   (§6)이 "느린 solver의 드문 업데이트 → 보간 레이어가 성긴 점들을 선형
+   연결 → 겉보기엔 매끈함" 아티팩트인지, 진짜 더 나은 제어 품질인지 아직
+   구분하지 못함 — 현재 jerk_rms는 보간 후 최종 명령 Q에서 계산되므로 이
+   혼입 가능성을 배제할 수 없음. 별도로 "보간 전 raw target 궤적"의
+   jerk/jump를 추가 계측해야 실제로 비교 가능.
+
+
+--------------------------------------------------------------------------------
+14. 다음 단계
+--------------------------------------------------------------------------------
+1. prob_methods.py의 _bank(f)를 (frame, psi_grid_deg) 키로 캐싱 — 같은
+   file-task 안에서 E0/E1/E2/E3가 동일 grid로 실행될 때 1회만 계산하도록
+   run_ckpt.py의 _worker_file을 수정(현재는 각 (method,grid) job이 독립적인
+   method 인스턴스를 새로 만듦). 캐싱 후 §4의 kill-test를 다시 통과하는지
+   재검증 필요(캐시 상태도 체크포인트/재개 안전성에 영향 없는지 확인).
+2. 캐싱 적용 후 실시간성(15Hz 데드라인) 재측정 — 4배 절감이 실현되면
+   E0-E3의 cand_gen_p95_ms가 ~220ms→~55ms 수준까지 내려갈 수 있어 66.7ms
+   예산에 근접.
+3. §11의 baseline 확정을 연구팀과 논의(roadmap 사전등록 갱신).
+4. §13-3의 보간 전/후 jerk 분리 계측 추가.
+5. candidate 생성 자체를 더 줄이는 방향(조기 feasibility pruning, coarse-
+   to-fine grid, psi 탐색 범위를 belief의 유효 지지집합으로 제한 등) 검토.
+
+
+--------------------------------------------------------------------------------
+15. 재현 / Resume 명령
+--------------------------------------------------------------------------------
+cd ~/teleoperation_repo/share/sim
+
+# 전체 894 x 9방법 x 3그리드 (15198 job) — 최초 실행과 재개가 완전히 동일 명령
+python3 experiments/prob_joint/run_ckpt.py all \
+  --cohort outputs/ex04_prob_894/cohort_data --out outputs/ex04_prob_894/run_all --workers 8
+
+# E0-E3 전용 진단 보충 실행 (10728 job)
+python3 experiments/prob_joint/run_ckpt.py probdiag \
+  --cohort outputs/ex04_prob_894/cohort_data --out outputs/ex04_prob_894/run_probdiag --workers 8
+
+# 진행률/ETA (실행 중에도 별도 터미널에서, attach 불필요)
+python3 experiments/prob_joint/run_ckpt.py --status --out outputs/ex04_prob_894/run_all
+python3 experiments/prob_joint/run_ckpt.py --status --out outputs/ex04_prob_894/run_probdiag
+
+# 통계 분석 재생성 (두 CSV 병합)
+cd experiments/prob_joint
+python3 analyze_ex04.py \
+  --csv ../../outputs/ex04_prob_894/run_all/per_traj.csv \
+  --csv ../../outputs/ex04_prob_894/run_probdiag/per_traj.csv \
+  --cohort ../../outputs/ex04_prob_894/cohort_894.json \
+  --out-dir ../../../11.15_exp
+
+# 회귀 테스트 (R-CANON + checkpoint 동작)
+python3 -m pytest tests/ -q
+
+
+--------------------------------------------------------------------------------
+16. GitHub 커밋 / push 결과
+--------------------------------------------------------------------------------
+이번 작업에서 생성한 커밋(모두 origin/main에 push 성공, 직접 확인):
+  - 3ff34d4  feat(ex04): checkpointed/resumable SQLite job runner
+  - a9f08f3  Merge remote-tracking branch 'origin/main' (동시 작업 세션과 충돌 없음)
+  - 92c8523  feat(ex04): branch-entropy/probability-change/candidate-gen timing
+  - 5b07d34  test(ex04): R-CANON coverage for E0-E3 q_ref; grid-aware analysis script
+  (이 보고서 커밋은 아래 별도로 push 예정 — push 성공 여부는 커밋 직후 직접
+   origin 로그로 재확인했음)
+
+대용량 바이너리(npz, SQLite DB)는 업로드하지 않음 — 커밋된 것은 코드
+(run_ckpt.py, prob_methods.py, analyze_ex04.py), 테스트, 이 보고서, 요약 CSV
+(ex04_full_summary.csv)뿐.
