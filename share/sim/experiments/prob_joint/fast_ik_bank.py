@@ -139,7 +139,6 @@ def exact_canonical_e1(m, T, mu_psi, kappa, q_track, psi_grid_deg=15.0):
             if not np.all(np.isfinite(q)) or np.linalg.norm(m.fk(q) - T) >= 1e-4:
                 continue
             n_candidates += 1
-            candidate_s += 0.0  # explicit: FK gate time included below in candidate_s
             r = float(lower[j] + .055 * np.sum((q - k.READY) ** 2))
             t = float(r + .85 * np.sum((q - q_track) ** 2))
             # Legacy's np.argmax/min selects the first equal-scoring candidate.
