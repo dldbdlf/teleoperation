@@ -116,3 +116,12 @@ def test_fast_e1_does_not_mutate_reference_or_robot(robot):
     assert np.array_equal(first.q_ref, second.q_ref)
     assert np.array_equal(first.q_des, second.q_des)
     np.testing.assert_array_equal(q, before)
+
+
+def test_checkpoint_config_hash_separates_fast_and_legacy():
+    from run_ckpt import config_hash_of, STAGE_PLANS
+    legacy = config_hash_of("cohort_sha", "mirror", np.pi, .5)
+    fast = config_hash_of("cohort_sha", "mirror", np.pi, .5, fast_e1=True)
+    assert legacy != fast
+    assert STAGE_PLANS["fast15"] == [("E1", 15.0)]
+    assert STAGE_PLANS["fast20"] == [("E1", 20.0)]
