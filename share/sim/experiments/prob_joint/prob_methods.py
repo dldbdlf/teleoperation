@@ -20,6 +20,7 @@ from scipy.special import logsumexp
 import baselines as bl
 import kinematics as k
 import synthetic_human as sh
+from fast_ik_bank import exact_canonical_e1
 
 METHODS = ("E0", "E1", "E2", "E3")
 METHOD_NAMES = {
@@ -32,7 +33,7 @@ METHOD_NAMES = {
 class ProbJointBranch(bl.Method):
     per_frame = True
 
-    def __init__(self, kind: str, psi_grid_deg: float = 15.0):
+    def __init__(self, kind: str, psi_grid_deg: float = 15.0, fast_e1: bool = False):
         if kind not in METHODS:
             raise ValueError(kind)
         if not (2 <= psi_grid_deg <= 45):
@@ -40,6 +41,7 @@ class ProbJointBranch(bl.Method):
         self.kind = kind
         self.name = METHOD_NAMES[kind]
         self.psi_grid_deg = float(psi_grid_deg)
+        self.fast_e1 = bool(fast_e1 and kind == 'E1')
 
     def reset(self, m, q0):
         super().reset(m, q0)
@@ -54,6 +56,8 @@ class ProbJointBranch(bl.Method):
         self.prob_change_hist = []
         self.candidate_count_hist = []
         self.prev_top1 = None
+        self.psi_evaluated_hist = []
+        self.psi_total_hist = []
 
     def _bank(self, f):
         # Fixed ordering and no q_previous dependence -> deterministic canonical q_ref
@@ -81,6 +85,26 @@ class ProbJointBranch(bl.Method):
             self.q_des = q.copy()
             self.fallback_count += 1
             return
+        if self.fast_e1:
+            # Exact certified pruning: same E0 q_ref and E1 q_des as full enumeration.
+            # Enabled explicitly, not in historical EX04 runs.
+            T = sh.tool_pose(self.m, f.b_W, f.b_R)
+            res = exact_canonical_e1(self.m, T, f.b_psi, f.b_kappa, q, self.psi_grid_deg)
+            self.q_ref = None if res.q_ref is None else res.q_ref.copy()
+            self.q_des = q.copy() if res.q_des is None else res.q_des.copy()
+            self.last_candidate_count = res.feasible_candidates
+            self.psi_evaluated_hist.append(res.psi_evaluated)
+            self.psi_total_hist.append(res.psi_total)
+            self.bank_latency_ms.append(res.candidate_ms)
+            self.selection_latency_ms.append(res.selection_ms)
+            if res.q_des is None:
+                self.fallback_count += 1
+            # Full posterior was not evaluated: mark entropy/count NOT MEASURED.
+            self.entropy_hist.append(float('nan'))
+            self.candidate_count_hist.append(float('nan'))
+            self.prob_change_hist.append(float('nan'))
+            return
+
         bank, psis = self._bank(f)
         self.bank_latency_ms.append(1000*(time.perf_counter()-start))
         self.last_candidate_count = len(bank)
