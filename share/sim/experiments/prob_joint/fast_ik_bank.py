@@ -136,7 +136,7 @@ def exact_canonical_e1(m, T, mu_psi, kappa, q_track, psi_grid_deg=15.0):
         n_evaluated += 1
         for branch_idx, q in enumerate(possible):
             # Exactly the same per-candidate FK gate as legacy ProbJointBranch._bank.
-            if not np.all(np.isfinite(q)) or np.linalg.norm(m.fk(q) - T) >= 1e-4:
+            if not np.all(np.isfinite(q)) or np.linalg.norm(m.fk(q) - T) > 1e-4:
                 continue
             n_candidates += 1
             r = float(lower[j] + .055 * np.sum((q - k.READY) ** 2))
