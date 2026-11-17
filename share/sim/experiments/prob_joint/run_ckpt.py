@@ -65,6 +65,8 @@ STAGE_PLANS = {
     # 15198-job "all" run already completed; re-running B7/B8/P/B7c/Pc would gain nothing since
     # they have no branch-posterior concept and their main-run results already stand.
     "probdiag": [(m, g) for g in (10.0, 15.0, 20.0) for m in ("E0", "E1", "E2", "E3")],
+    "fast15": [("E1", 15.0)],
+    "fast20": [("E1", 20.0)],
 }
 
 
@@ -79,9 +81,9 @@ def grid_key(mid, grid):
     return "na" if mid in NON_GRID_METHODS else f"{grid:g}"
 
 
-def make_method(mid, grid):
+def make_method(mid, grid, fast_e1=False):
     if mid in ("E0", "E1", "E2", "E3"):
-        return ProbJointBranch(mid, grid)
+        return ProbJointBranch(mid, grid, fast_e1=fast_e1)
     if mid == "B7c":
         return bl.BeliefCanonicalIK(psi_grid_deg=grid)
     if mid == "Pc":
@@ -126,7 +128,7 @@ def get_meta(con):
 _W = {}  # per-worker-process globals
 
 
-def _winit(queue, psi_map, qd_max, hold_s):
+def _winit(queue, psi_map, qd_max, hold_s, fast_e1=False):
     # Workers must NOT inherit the main process's SIGTERM/SIGINT handler (fork duplicates it by
     # default): a custom handler that doesn't exit would make pool.terminate() hang forever
     # waiting for a worker that just keeps running its current job. Reset to default disposition
@@ -136,6 +138,7 @@ def _winit(queue, psi_map, qd_max, hold_s):
     _W["q"] = queue
     _W["m"] = k.Nero.from_urdf()
     _W["psi_map"], _W["qd_max"], _W["hold_s"] = psi_map, qd_max, hold_s
+    _W["fast_e1"] = bool(fast_e1)
 
 
 def prob_diagnostics(meth):
@@ -182,7 +185,7 @@ def _run_one(file_path, scenario, method, grid, config_hash, code_version, tgt, 
     t0 = time.perf_counter()
     try:
         d = np.load(file_path, allow_pickle=True)
-        meth = make_method(method, grid)
+        meth = make_method(method, grid, fast_e1=_W.get('fast_e1', False))
         Q, Qreq, held, rt, is_update, invalid, branch_hist = rb.run(m, d, meth, psi_map, qd_max, hold_s)
         row = {"group": scenario, "file": Path(file_path).name, "method": method, "grid": grid_key(method, grid),
                **rb.metrics(m, d, Q, Qreq, held, rt, is_update, invalid, branch_hist,
@@ -211,8 +214,10 @@ def _worker_file(args):
 
 
 # -------------------------------------------------------------------------- planning
-def config_hash_of(cohort_manifest_sha, psi_map, qd_max, hold_s):
+def config_hash_of(cohort_manifest_sha, psi_map, qd_max, hold_s, fast_e1=False):
     s = f"psi_map={psi_map} qd_max={qd_max!r} hold_s={hold_s!r} manifest={cohort_manifest_sha}"
+    if fast_e1:
+        s += " fast_e1=certified_prune_v1"
     return hashlib.sha1(s.encode()).hexdigest()[:12]
 
 
@@ -373,7 +378,7 @@ def write_csv_snapshot(con, config_hash, code_version, out_dir):
 
 
 def run_plan(cohort_dir, out_dir, stages, psi_map="mirror", qd_max=np.pi, hold_s=0.5, n_workers=8,
-             max_attempts=3, stage_label=None):
+             max_attempts=3, stage_label=None, fast_e1=False):
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -381,7 +386,7 @@ def run_plan(cohort_dir, out_dir, stages, psi_map="mirror", qd_max=np.pi, hold_s
     manifest, files, jobs = build_plan(cohort_dir, stages)
     code_version = git_sha()
     config_hash = config_hash_of(manifest.get("cohort_origin_sha256", manifest.get("git_sha", "na")),
-                                  psi_map, qd_max, hold_s)
+                                  psi_map, qd_max, hold_s, fast_e1=fast_e1)
     con = connect(out_dir / "checkpoints" / "run_state.sqlite")
     sync_plan(con, files, jobs, config_hash, code_version)
     set_meta(con, current_stage=stage_label or "+".join(stages), config_hash=config_hash,
@@ -406,7 +411,7 @@ def run_plan(cohort_dir, out_dir, stages, psi_map="mirror", qd_max=np.pi, hold_s
     print(f"[run_ckpt] {len(tasks)} files with pending work, {len(pending_rows)} jobs total", flush=True)
 
     n_failed_perm = 0
-    with mp.Pool(processes=n_workers, initializer=_winit, initargs=(queue, psi_map, qd_max, hold_s)) as pool:
+    with mp.Pool(processes=n_workers, initializer=_winit, initargs=(queue, psi_map, qd_max, hold_s, fast_e1)) as pool:
         async_res = pool.map_async(_worker_file, tasks, chunksize=1)
         while True:
             if _STOP:
@@ -542,6 +547,7 @@ def main():
     ap.add_argument("--qd-max", type=float, default=np.pi)
     ap.add_argument("--hold-s", type=float, default=0.5)
     ap.add_argument("--resume", action="store_true", help="no-op: resuming is always the default")
+    ap.add_argument("--fast-e1", action="store_true", help="certified psi-pruned E1; use a separate output dir")
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--max-attempts", type=int, default=3)
     a = ap.parse_args()
@@ -550,9 +556,11 @@ def main():
         return cmd_status(a.out)
     if not a.plan or not a.cohort:
         ap.error("PLAN and --cohort are required unless --status is given")
+    if a.plan in ("fast15", "fast20") and not a.fast_e1:
+        ap.error("fast15/fast20 require --fast-e1")
     stages = [a.plan]
     return run_plan(a.cohort, a.out, stages, a.psi_map, a.qd_max, a.hold_s, a.workers,
-                     a.max_attempts, stage_label=a.plan)
+                     a.max_attempts, stage_label=a.plan, fast_e1=a.fast_e1)
 
 
 if __name__ == "__main__":
