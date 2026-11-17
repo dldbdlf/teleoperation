@@ -9,11 +9,14 @@ Usage:
 measurement is exactly the kind of error that produced the 44.7mm std dev last time.
 """
 import argparse
+import datetime
 import time
+from pathlib import Path
 
 import numpy as np
 import cv2
 import cv2.aruco as aruco
+import yaml
 
 import rclpy
 from rclpy.node import Node
@@ -31,10 +34,11 @@ def pose_to_matrix(rvec, tvec):
 
 
 class ExtrinsicCalibAprilTag(Node):
-    def __init__(self, tag_id, tag_length_m, n_samples):
+    def __init__(self, tag_id, tag_length_m, n_samples, out_path):
         super().__init__('extrinsic_calib_apriltag')
         self.tag_id = tag_id
         self.n_samples = n_samples
+        self.out_path = out_path
         self.bridge = CvBridge()
         self.detector = aruco.ArucoDetector(aruco.getPredefinedDictionary(aruco.DICT_APRILTAG_36H11))
         self.obj_points = np.array([
@@ -117,11 +121,35 @@ class ExtrinsicCalibAprilTag(Node):
         print('4x4 transform matrix:')
         print(T_final)
         print('\nstatic_transform_publisher command (x y z qx qy qz qw parent child):')
-        print(f"ros2 run tf2_ros static_transform_publisher "
-              f"{t_mean[0]:.5f} {t_mean[1]:.5f} {t_mean[2]:.5f} "
-              f"{q[0]:.5f} {q[1]:.5f} {q[2]:.5f} {q[3]:.5f} "
-              f"D415_color_optical_frame D435i_color_optical_frame")
+        static_tf_cmd = (
+            f"ros2 run tf2_ros static_transform_publisher "
+            f"{t_mean[0]:.5f} {t_mean[1]:.5f} {t_mean[2]:.5f} "
+            f"{q[0]:.5f} {q[1]:.5f} {q[2]:.5f} {q[3]:.5f} "
+            f"D415_color_optical_frame D435i_color_optical_frame")
+        print(static_tf_cmd)
         print('====================================================\n')
+
+        if self.out_path:
+            record = dict(
+                date=datetime.date.today().isoformat(),
+                tag_id=self.tag_id,
+                n_samples=len(self.samples),
+                translation_m=[float(x) for x in t_mean],
+                translation_std_m=[float(x) for x in t_std],
+                translation_std_magnitude_mm=float(np.linalg.norm(t_std) * 1000),
+                quaternion_xyzw=[float(x) for x in q],
+                rotation_matrix=R_mean.tolist(),
+                transform_4x4=T_final.tolist(),
+                parent_frame='D415_color_optical_frame',
+                child_frame='D435i_color_optical_frame',
+                static_transform_publisher_cmd=static_tf_cmd,
+                note=('Repeatability only (same-session std dev), not yet validated against an '
+                      'independent ground-truth measurement -- see README.md G0 caveat.'),
+            )
+            self.out_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.out_path, 'w') as f:
+                yaml.safe_dump(record, f, sort_keys=False)
+            print(f'Saved calibration result to {self.out_path}')
         rclpy.shutdown()
 
 
@@ -131,10 +159,17 @@ def main():
     ap.add_argument('--tag-length-m', type=float, required=True,
                      help='measured black-square side length in meters (not nominal)')
     ap.add_argument('--n-samples', type=int, default=60)
+    ap.add_argument('--out', type=Path, default=None,
+                     help='where to save the result as YAML; default: '
+                          'calib_results/extrinsic_D415_D435i_<today>.yaml next to this script')
     args = ap.parse_args()
+    out_path = args.out
+    if out_path is None:
+        today = datetime.date.today().isoformat()
+        out_path = Path(__file__).parent / 'calib_results' / f'extrinsic_D415_D435i_{today}.yaml'
 
     rclpy.init()
-    node = ExtrinsicCalibAprilTag(args.tag_id, args.tag_length_m, args.n_samples)
+    node = ExtrinsicCalibAprilTag(args.tag_id, args.tag_length_m, args.n_samples, out_path)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

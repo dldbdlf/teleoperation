@@ -35,7 +35,69 @@ Translation (m): [-0.47115, 0.01617, 0.56663]
 ros2 run tf2_ros static_transform_publisher -0.47115 0.01617 0.56663 0.00020 0.70309 -0.00907 0.71104 D415_color_optical_frame D435i_color_optical_frame
 ```
 
-**Not yet done**: independent accuracy check (known-length object, not just repeatability).
+**Not yet done** (as of 2026-11-10): independent accuracy check (known-length object, not just
+repeatability).
+
+## Re-calibration + independent accuracy check (2026-11-17)
+
+Re-ran the extrinsic calibration and, this time, also validated it against an independent
+ground-truth distance (a ruler-measured move), not just repeatability. `extrinsic_calib_apriltag.py`
+now also saves its result as YAML (`--out`, defaults to
+`calib_results/extrinsic_D415_D435i_<date>.yaml`) instead of only printing it.
+
+Live ROS2 preview while positioning the rig: `python3 live_dual_view.py` (two OpenCV windows, no
+web artifact, AprilTag overlay). For the manual 30cm-move accuracy check below:
+`python3 manual_capture_gui.py` (two camera windows + a Control window with CAPTURE A / CAPTURE B /
+SAVE BEFORE / SAVE AFTER / RESET buttons -- every capture is a deliberate click, nothing automatic).
+
+### Extrinsic results (D415 <- D435i translation, meters)
+
+| Run | Tag | Motion | n | std magnitude | translation (m) |
+|---|---|---|---|---|---|
+| `extrinsic_D415_D435i_2026-11-17.yaml` | T0 (9cm) | static | 60 | 26.4mm | [-0.298, -0.010, 0.160] |
+| `extrinsic_D415_D435i_2026-11-17_v2.yaml` | T0 (9cm) | slow, paused | 60 | **17.5mm** | [-0.291, -0.011, 0.155] |
+| `extrinsic_D415_D435i_2026-11-17_tag1.yaml` | T1 (6cm) | slow, paused | 60 | 14.5mm | [-0.282, 0.025, 0.183] |
+
+**Recommended result: `extrinsic_D415_D435i_2026-11-17_v2.yaml`** (T0, moving the tag slowly
+with pauses -- confirms the 2026-11-10 finding that this halves the std vs. a static tag).
+
+**Important caveat, found by cross-checking T0 against T1**: the two tags' independently-computed
+extrinsics disagree by **46.3mm** (axis-wise: x 9.5mm, y 35.5mm, z 28.2mm) -- 2-3x each run's own
+repeatability std. Since the two cameras are rigidly fixed, a correct extrinsic should not depend
+on which tag was used to measure it, so this 46mm gap is a real systematic error, not just noise.
+T0's printed size was re-measured with a ruler and confirmed exactly 9.0cm (not the cause).
+Suspected remaining causes, not yet isolated: T1 is mounted on a curved surface (upper arm) vs T0's
+flatter mount (torso); the two tags sit at different distances/angles from the cameras, which
+changes how much a fixed angular pose error turns into a translation error. **Treat the ~46mm
+cross-tag gap as the current accuracy floor for this extrinsic, not the 14-17mm repeatability
+std.**
+
+### Metric-scale accuracy check: move T0 by a ruler-measured 30cm, independently per camera
+
+This checks each camera's own depth/scale accuracy (not the inter-camera extrinsic): capture T0's
+PnP position at a start point, move it exactly 30cm (ruler-measured), capture again, and compare
+each camera's *own* measured displacement to the known 30cm -- no assumption about the other
+camera or the rig geometry is involved.
+
+| Trial | Cam A (D415) error | Cam B (D435i) error |
+|---|---|---|
+| close distance (~0.85-0.97m) | -17.5mm (-5.8%) | -8.4mm (-2.8%) |
+| close distance, repeat | -10.2mm (-3.4%) | -6.1mm (-2.0%) |
+| far distance (~1.6-1.8m) | +4.2mm (+1.4%) | +9.9mm (+3.3%) |
+
+Both cameras are accurate to within **1-6%** of the ruler-measured 30cm, at both close and far
+range -- moving the tag further away did *not* make it worse here, which argues against distance
+being the main driver of the 46mm cross-tag extrinsic gap above (a hypothesis raised and tested,
+not confirmed).
+
+**Pitfall hit while running this** (left in for future sessions): a SAVE AFTER compared against a
+*stale* SAVE BEFORE from an earlier, unrelated tag position produced a nonsense "+47-63% error" --
+not a real accuracy problem, just the wrong baseline. `manual_capture_gui.py` does not warn about
+this; always RESET and do a fresh BEFORE immediately before moving the tag.
+
+**Still not done**: isolating the actual cause of the 46mm T0-vs-T1 cross-tag gap (candidates:
+tag-mount curvature, tag-to-camera angle/distance at capture time, residual lens distortion not
+captured by the factory `D=0` camera_info).
 
 ## Tag -> joint center offsets + D4 prep (2026-11-10)
 
