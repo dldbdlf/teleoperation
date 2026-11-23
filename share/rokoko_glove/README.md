@@ -93,10 +93,45 @@ Both require the `dialout` group for serial port access (`sudo usermod -aG dialo
    mid-setup partially configures the glove and leaves it in whatever state the last-sent command
    produced.
 
+## Camera + glove fusion (2026-11-23, same day)
+
+Position source decided: the camera (AprilTag T3 on the dorsal hand, seen by the single D415 --
+this project's designated online teleop camera). `camera_glove_fusion.py` combines it with the
+glove's `hub` orientation into a live `b_W`/`b_R` pair matching `share/sim/baselines.py`'s `Frame`
+fields, confirmed working end-to-end live on screen (two OpenCV windows, no web artifact; a
+CALIBRATE/CLEAR button pair, manually clicked -- never automatic, per this project's established
+convention):
+
+```
+Tag 3: VISIBLE | Glove hub age: 0.19s
+FUSED Frame (live):
+b_W (m, camera frame) = [0.0198 0.244 0.8814]
+b_R row0 = [0.965 -0.09 0.245]
+b_R row1 = [-0.014 -0.955 -0.296]
+b_R row2 = [0.26 0.282 -0.923]
+b_psi = nan, b_kappa = 0.0  (no elbow source wired in yet)
+```
+
+Calibration is a **one-shot rotation alignment** (`R_offset = R_cam_tag @ inv(R_glove_hub)` at the
+instant CALIBRATE is clicked), not a proper hand-eye calibration -- it inherits whatever noise both
+sensors had at that single instant, and it assumes the tag and the glove's hub stay rigidly aligned
+to the same hand frame afterward (re-calibrate if the glove shifts, or after taking it off).
+
+Requires the D415 ROS2 node running as `/cam_1/D415` (see `share/apriltag_gt/README.md` for the
+launch command) and the glove connected via USB.
+
 ## Not done yet
 
-- The Frame-building bridge into `share/sim/baselines.py`'s solver (needs the position-source
-  decision in CAVEATS #2 above — worth deciding deliberately rather than guessing).
+- **`b_psi`/`b_kappa` (elbow-swivel belief)**: `camera_glove_fusion.py` always reports
+  `(nan, 0.0)` -- no live elbow source is wired in. Candidates: T1/T2 AprilTag tracking (same
+  pipeline as T3, just two more tags), or the glove's own `arm` sensor if its stream reliability
+  issue (CAVEATS #4) gets resolved.
+- **Actually driving the solver / NERO with this Frame stream** -- `camera_glove_fusion.py` only
+  displays the fused values live; it doesn't yet call into `baselines.py`'s `Method.update()` or
+  publish a Frame onto whatever topic a real control loop would consume.
+- **Ground-truth validation of the fusion itself** -- no check yet that `R_offset` genuinely
+  produces a correct `b_R`, e.g. by rotating the hand a known amount and checking the fused
+  orientation tracks it, the same kind of independent check `share/apriltag_gt/` insisted on for
+  the camera-to-camera extrinsic rather than stopping at "it looks plausible on screen."
 - Reconciling or just living with the stream's unidentified accel units.
-- Any ground-truth validation (CAVEATS #3).
 - Investigating why `little`/`arm` don't stream (CAVEATS #4), if they turn out to matter later.
